@@ -1,0 +1,12 @@
+{
+  "name": "ctx",
+  "version": "0.1.0",
+  "description": "Шкалы под полем ввода: контекст, лимиты 5 ч и недели, кэш, стоимость",
+  "author": { "name": "bonosurgut" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "redAt":        { "type": "number",  "title": "Предупреждение 🔴 с, %", "description": "С какого процента контекста перед шкалой ставится 🔴", "default": 50 },
+    "cacheMinutes": { "type": "number",  "title": "Срок кэша, мин", "description": "Через сколько минут после ответа кэш считается остывшим", "default": 5 },
+    "showCost":     { "type": "boolean", "title": "Показывать стоимость", "description": "Показывать стоимость сессии в $", "default": true }
+  }
+}

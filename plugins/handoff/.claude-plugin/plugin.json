@@ -1,0 +1,11 @@
+{
+  "name": "handoff",
+  "version": "0.1.0",
+  "description": "Хендофф сессии: на пороге контекста пишет документ передачи, коммитит и открывает новую сессию",
+  "author": { "name": "bonosurgut" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "threshold": { "type": "number", "title": "Порог вопроса, %", "description": "На каком проценте контекста спросить о передаче", "default": 50 },
+    "step":      { "type": "number", "title": "Повторить через, %", "description": "Насколько вырасти контексту после «Не сейчас», чтобы спросить снова", "default": 10 }
+  }
+}

@@ -1,0 +1,6 @@
+__pycache__/
+.pytest_cache/
+**/.claude-plugin/types/
+.DS_Store
+.venv/
+docs/superpowers/handoffs/
