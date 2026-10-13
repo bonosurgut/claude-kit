@@ -466,3 +466,153 @@ def test_gather_chain_tag_is_plain_text_not_a_pattern(repo, run):
     (h / 'HANDOFF_y.md').write_text('**Chain:** `a.c` seq `1`\n', encoding='utf-8')
     got = between(run('gather.py', 'a.c', cwd=repo), "--- chain candidates for 'a.c'", "--- newest candidate's")
     assert got == ['HANDOFF_y.md | `a.c` seq `1`']
+
+
+# --- --handoff-dir: the folder of the file the mod asked for (auto mode), not the current folder -------------
+#
+# Source of the expected values: the task brief (live bug 2026-10-11…13: the session started in a folder that is
+# not a repository, the shell later moved into a nested repository, and the chain parent was looked up in the
+# wrong place). Every value is typed from the files the test creates, not read back from gather.py's output.
+
+def make_chain_file(folder, name, chain, where_going):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / name).write_text(f"**Chain:** {chain}\n## Where We're Going\n- {where_going}\n", encoding='utf-8')
+
+
+def two_repos(tmp_path, make_repo, a_name='a', b_name='b'):
+    """Repo A holds the handoffs (in x/docs/handoffs), repo B is where the command is run from and holds
+    handoffs of the same chain `t1` that must NOT be read."""
+    a = make_repo(tmp_path / a_name)
+    b = make_repo(tmp_path / b_name)
+    git_out(a, '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'only in A')
+    (a / 'a-only.txt').write_text('x\n', encoding='utf-8')
+    git_out(b, 'branch', '-m', 'branch-of-b')
+    make_chain_file(a / 'x/docs/handoffs', 'HANDOFF_t1_from-a.md', '`t1` seq `3`', 'step from A')
+    make_chain_file(b / 'docs/handoffs', 'HANDOFF_t1_from-b.md', '`t1` seq `9`', 'step from B')
+    return a, b
+
+
+def test_gather_handoff_dir_wins_over_the_current_folder(tmp_path, run, make_repo):
+    a, b = two_repos(tmp_path, make_repo)
+    out = run('gather.py', 't1', '--handoff-dir', a / 'x/docs/handoffs', cwd=b)
+    d = lines(out)
+    assert d['ROOT'] == str(a)                                       # the repository of the folder, not of the cwd
+    assert d['HANDOFF_DIR'] == str(a / 'x' / 'docs' / 'handoffs')    # exactly the given folder
+    assert 'NOT_GIT' not in d and 'GIT_ERROR' not in d
+    # git state is A's: its branch, its last commit, its untracked file; none of B's
+    assert d['BRANCH'] == git_out(a, 'branch', '--show-current').strip()
+    assert d['BRANCH'] != 'branch-of-b'
+    commits = between(out, '--- recent commits', '--- uncommitted')
+    assert [c.split(' ', 1)[1] for c in commits] == ['only in A', 'init']
+    assert between(out, '--- uncommitted', '--- diff stat') == ['?? a-only.txt', '?? x/']
+    # the chain is looked up in A's folder: one candidate, A's, with A's "Where We're Going"
+    assert between(out, "--- chain candidates for 't1'", "--- newest candidate's") == ['HANDOFF_t1_from-a.md | `t1` seq `3`']
+    assert between(out, "--- newest candidate's 'Where We're Going' (max 15 lines): HANDOFF_t1_from-a.md") == ['- step from A']
+    assert 'from-b' not in out
+    assert between(out, '--- newest handoffs', 'INDEX:') == ['HANDOFF_t1_from-a.md | `t1` seq `3` | ']
+
+
+def test_gather_handoff_dir_option_may_come_first_and_the_tag_after(tmp_path, run, make_repo):
+    a, b = two_repos(tmp_path, make_repo)
+    out = run('gather.py', '--handoff-dir', a / 'x/docs/handoffs', 't1', cwd=b)
+    assert between(out, "--- chain candidates for 't1'", "--- newest candidate's") == ['HANDOFF_t1_from-a.md | `t1` seq `3`']
+
+
+def test_gather_without_the_option_still_reads_the_current_folder(tmp_path, run, make_repo):
+    # the same two repositories: manual mode is unchanged and finds B's handoff, not A's
+    a, b = two_repos(tmp_path, make_repo)
+    out = run('gather.py', 't1', cwd=b)
+    assert lines(out)['ROOT'] == str(b)
+    assert between(out, "--- chain candidates for 't1'", "--- newest candidate's") == ['HANDOFF_t1_from-b.md | `t1` seq `9`']
+
+
+def test_gather_handoff_dir_that_does_not_exist_yet_is_looked_at_through_its_parent(tmp_path, run, make_repo):
+    # the first auto handoff of a project: neither docs/ nor docs/handoffs/ exists, but the repository does
+    a, b = two_repos(tmp_path, make_repo)
+    new = a / 'brand' / 'new' / 'handoffs'
+    d = lines(run('gather.py', 't1', '--handoff-dir', new, cwd=b))
+    assert d['ROOT'] == str(a)
+    assert 'GIT_ERROR' not in d and 'NOT_GIT' not in d
+    assert d['HANDOFF_DIR'] == f'{new} (does not exist yet — create it)'
+    assert not new.exists()                                           # gather.py creates nothing
+
+
+def test_gather_handoff_dir_outside_git_is_not_git_and_is_the_root(tmp_path, run, make_repo):
+    b = make_repo(tmp_path / 'b')
+    plain = tmp_path / 'plain'
+    make_chain_file(plain / 'docs/handoffs', 'HANDOFF_t1_p.md', '`t1` seq `4`', 'step from plain')
+    out = run('gather.py', 't1', '--handoff-dir', plain / 'docs/handoffs', cwd=b)
+    d = lines(out)
+    assert d['NOT_GIT'] == 'yes — no git repository found, using the given handoff folder'
+    assert d['ROOT'] == str(plain / 'docs' / 'handoffs')
+    assert d['HANDOFF_DIR'] == str(plain / 'docs' / 'handoffs')
+    assert 'BRANCH' not in d and 'GIT_ERROR' not in d
+    assert between(out, "--- chain candidates for 't1'", "--- newest candidate's") == ['HANDOFF_t1_p.md | `t1` seq `4`']
+
+
+def test_gather_handoff_dir_not_git_and_not_existing_yet(tmp_path, run, make_repo):
+    b = make_repo(tmp_path / 'b')
+    plain = tmp_path / 'plain'; plain.mkdir()
+    d = lines(run('gather.py', '--handoff-dir', plain / 'docs/handoffs', cwd=b))
+    assert d['NOT_GIT'].startswith('yes')
+    assert d['HANDOFF_DIR'] == f"{plain / 'docs' / 'handoffs'} (does not exist yet — create it)"
+
+
+def test_gather_handoff_dir_with_spaces_and_cyrillic(tmp_path, run, make_repo):
+    a = make_repo(tmp_path / 'Мои проекты' / 'сайт номер 2')
+    b = make_repo(tmp_path / 'другой репозиторий')
+    folder = a / 'документы' / 'передача смены'
+    make_chain_file(folder, 'HANDOFF_сайт_итог.md', '`сайт` seq `1`', 'шаг из A')
+    make_chain_file(b / 'docs/handoffs', 'HANDOFF_сайт_чужой.md', '`сайт` seq `5`', 'шаг из B')
+    out = run('gather.py', 'сайт', '--handoff-dir', folder, cwd=b)
+    d = lines(out)
+    assert d['ROOT'] == str(a)
+    assert d['HANDOFF_DIR'] == str(folder)
+    assert between(out, "--- chain candidates for 'сайт'", "--- newest candidate's") == ['HANDOFF_сайт_итог.md | `сайт` seq `1`']
+    assert between(out, "--- newest candidate's 'Where We're Going'") == ['- шаг из A']
+
+
+def test_gather_handoff_dir_git_missing_is_reported_as_in_manual_mode(tmp_path, run, make_repo):
+    a, b = two_repos(tmp_path, make_repo)
+    d = lines(run('gather.py', 't1', '--handoff-dir', a / 'x/docs/handoffs', cwd=b, env={'PATH': str(tmp_path / 'no-git-here')}))
+    assert d['NOT_GIT'] == 'yes — git is not installed'
+    assert d['HANDOFF_DIR'] == str(a / 'x' / 'docs' / 'handoffs')
+
+
+@pytest.mark.parametrize('args, message', [
+    (['--handoff-dir'], '--handoff-dir needs a folder'),
+    (['--handoff-dir', ''], '--handoff-dir needs a folder'),
+    (['--handoff-dir', 'docs/handoffs'], "--handoff-dir must be an absolute path, got 'docs/handoffs'"),
+    (['t1', '--handoff-dir', 'x'], "--handoff-dir must be an absolute path, got 'x'"),
+    (['--handoff-dr', '/tmp/x'], 'unknown option --handoff-dr'),
+    (['--handoff-dir=/tmp/x'], 'unknown option --handoff-dir=/tmp/x'),
+])
+def test_gather_handoff_dir_bad_arguments_stop_with_a_usage_error(tmp_path, run_fail, make_repo, args, message):
+    # a misspelt or relative folder must not quietly mean "the current folder"
+    out = run_fail('gather.py', *args, cwd=make_repo(tmp_path / 'b'))
+    assert out.splitlines()[0] == f'gather.py: {message}'
+    assert out.splitlines()[1] == 'usage: gather.py [chain_tag] [--handoff-dir ABSOLUTE_FOLDER]'
+    assert 'ROOT:' not in out
+
+
+def test_gather_extra_words_after_the_tag_are_still_ignored(tmp_path, run, make_repo):
+    # behaviour from before the option existed: only the first word is the tag
+    a, b = two_repos(tmp_path, make_repo)
+    out = run('gather.py', 't1', 'ignored', 'words', cwd=b)
+    assert between(out, "--- chain candidates for 't1'", "--- newest candidate's") == ['HANDOFF_t1_from-b.md | `t1` seq `9`']
+
+
+def test_gather_empty_first_word_is_the_tag_and_means_no_chain(tmp_path, run, make_repo):
+    # `gather.py "" t1`: the first word (empty) is the tag, so there is no chain section; "t1" is an ignored extra word
+    a, b = two_repos(tmp_path, make_repo)
+    assert '--- chain candidates' not in run('gather.py', '', 't1', cwd=b)
+
+
+def test_nearest_existing_walks_up_to_a_real_folder(tmp_path):
+    g = load_gather()
+    (tmp_path / 'one').mkdir()
+    (tmp_path / 'file.txt').write_text('x', encoding='utf-8')
+    assert g.nearest_existing(tmp_path / 'one') == tmp_path / 'one'
+    assert g.nearest_existing(tmp_path / 'one' / 'two' / 'three') == tmp_path / 'one'
+    assert g.nearest_existing(tmp_path / 'file.txt' / 'inside') == tmp_path                # a file is not a folder
+    assert g.nearest_existing(tmp_path / 'file.txt') == tmp_path

@@ -110,8 +110,16 @@ async function fallback($: Eng, prompt: string, why: string, where: Where) {
 
 // ---------- запуск передачи (F-16, F-17) ----------
 
+// Корень проекта (F-10) считается от корня сессии, который отдаёт движок ($.session.root()): там, где сессия началась,
+// или куда её унесли `/cd`, смена папки хостом или перенос в рабочее дерево. `cd` оболочки во время работы корень не двигает,
+// а текущая папка ($.session.cwd()) за ним уходит: так хендофф лёг во вложенный репозиторий, куда агент зашёл (живая ошибка).
 async function projectRoot($: Eng): Promise<{ root: string; isGit: boolean }> {
-  const cwd = await $.session.cwd()
+  let cwd: string
+  try {
+    cwd = await $.session.root()
+  } catch {
+    cwd = await $.session.cwd() // root() не ответил (его может отклонить хук): лучше текущая папка, чем сорванная передача
+  }
   const r = await $.process.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], { timeoutMs: 5000 }).catch(() => null)
   const top = r?.exitCode === 0 ? r.stdout.trim() : ''
   // Обратные слэши (Windows) заменяются прямыми: logic.ts склеивает пути через `/`.

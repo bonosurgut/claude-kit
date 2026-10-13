@@ -580,3 +580,79 @@ def test_threshold_default_quoted_in_cost_model_is_the_plugins(text):
     default = json.loads(PLUGIN_JSON.read_text(encoding='utf-8'))['userConfig']['threshold']['default']
     assert default == 50
     assert 'around 50% of the context' in section(text, '## Cost Model — why the steps below are shaped this way')
+
+
+# --- auto mode looks things up in the folder of the target path (live bug 2026-10-11…13) ---------------------------
+#
+# Source of the expected behaviour: the task brief. The session started in a folder that was not a repository, the
+# shell later moved into a nested repository, and gather (run in the shell's folder) found the chain parent there
+# instead of in the folder of the file the mod asked for. The text cannot make the model obey; these tests pin what
+# can be checked: auto mode's text passes the option, manual mode's text does not, the documented call really works
+# against the script, and the permission rule still matches the longer call.
+
+def mode_blocks(text):
+    mode = section(text, '## Mode switch — decide before Step 1')
+    return mode[mode.index('**AUTO MODE**'):mode.index('**MANUAL MODE**')], mode[mode.index('**MANUAL MODE**'):]
+
+
+def step1_auto_paragraph(text):
+    step1 = section(text, '## Step 1: Gather — ONE Bash call')
+    return next(p for p in step1.split('\n\n') if p.startswith('**Auto mode:**'))
+
+
+def test_auto_mode_passes_handoff_dir_and_manual_mode_does_not(text):
+    auto, manual = mode_blocks(text)
+    assert '--handoff-dir' in auto
+    assert '--handoff-dir' not in manual
+    paragraph = step1_auto_paragraph(text)
+    assert 'add `--handoff-dir "<folder of the target path>"` to this same call' in paragraph
+    assert paragraph.endswith('Manual mode: no such option.')
+    # the one documented command line (manual mode's) is unchanged: no fenced block carries the option
+    assert '--handoff-dir' not in command_template(text, 'gather.py')
+    assert not [b for b in fences(text) if '--handoff-dir' in b]
+    # Step 1 mentions the option only in that paragraph
+    step1 = section(text, '## Step 1: Gather — ONE Bash call')
+    assert step1.replace(paragraph, '').count('--handoff-dir') == 0
+
+
+def test_the_python_missing_fallback_also_uses_the_folder_of_the_target_path_in_auto_mode(text):
+    step1 = next(l for l in section(text, '## If Python is missing').splitlines() if l.startswith('- **Step 1:**'))
+    assert ('Auto mode: `HANDOFF_DIR` is the folder of the target path, and every git command of this step is run as '
+            '`git -C "<that folder>"` (a folder that does not exist yet: its nearest existing parent).') in step1
+
+
+def documented_handoff_dir_args(text, folder):
+    """The option as the auto-mode paragraph writes it, with the placeholder filled in, split like a shell would."""
+    m = re.search(r'add `(--handoff-dir "<folder of the target path>")`', step1_auto_paragraph(text))
+    assert m
+    return shlex.split(m.group(1).replace('<folder of the target path>', str(folder)))
+
+
+def test_documented_gather_call_with_handoff_dir_reads_the_target_folder_not_the_shell_folder(text, tmp_path, make_repo):
+    target = make_repo(tmp_path / 'Мой проект' / 'Общая папка')                  # spaces and Cyrillic in the path
+    shell = make_repo(tmp_path / 'nested-repo')                           # where the shell has moved to
+    folder = target / 'docs' / 'handoffs'
+    folder.mkdir(parents=True)
+    (folder / 'HANDOFF_tt_target.md').write_text('**Chain:** `tt` seq `2`\n', encoding='utf-8')
+    (shell / 'docs/handoffs').mkdir(parents=True)
+    (shell / 'docs/handoffs/HANDOFF_tt_shell.md').write_text('**Chain:** `tt` seq `7`\n', encoding='utf-8')
+    argv = build(command_template(text, 'gather.py'), {'[chain_tag]': 'tt'}) + documented_handoff_dir_args(text, folder)
+    out = sh(argv, shell).splitlines()
+    assert f'ROOT: {target}' in out
+    assert f'HANDOFF_DIR: {folder}' in out
+    assert [l for l in out if 'tt_shell' in l] == []                              # the shell folder's handoff is not read
+    # the target folder's handoff, once in "newest handoffs" (no status line: empty last field), once as the chain candidate
+    assert [l for l in out if l.startswith('HANDOFF_tt_')] == ['HANDOFF_tt_target.md | `tt` seq `2` | ', 'HANDOFF_tt_target.md | `tt` seq `2`']
+
+
+@pytest.mark.parametrize('interp, script, folder', [
+    ('python3 -I', f'{POSIX_BASES[0]}/scripts/gather.py', '/Users/anna/proj/docs/handoffs'),
+    ('python3 -I', f'{POSIX_BASES[1]}/scripts/gather.py', '/Users/Анна Иванова/Общая папка/docs/handoffs'),
+    ('python -I', f'{POSIX_BASES[2]}/scripts/gather.py', '/home/dev/my proj/docs/superpowers/handoffs'),
+    ('py -3 -I', f'{WINDOWS_BASE}\\scripts\\gather.py', 'C:\\Users\\Anna\\Общая папка\\docs\\handoffs'),
+])
+def test_gather_call_with_handoff_dir_is_still_matched_by_exactly_its_own_rule(text, interp, script, folder):
+    rules = [r for r in frontmatter(text)['allowed-tools'] if r.startswith('Bash(')]
+    # the call as the text writes it: the script and the folder in double quotes, the option after the tag
+    cmd = f'{interp} "{script}" tt --handoff-dir "{folder}"'
+    assert [r for r in rules if bash_rule_matches(r, cmd)] == [f'Bash({interp} *handoff*gather.py*)']

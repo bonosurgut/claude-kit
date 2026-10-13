@@ -75,7 +75,8 @@ const NOCLIP_TEXT = (why: string, lead: string) => `Новая сессия не
 type WorldOpts = {
   surfaces?: RenderSurface[]
   env?: Record<string, string>
-  cwd?: string
+  cwd?: string // что отвечает $.session.cwd()
+  root?: string // что отвечает $.session.root(); по умолчанию то же, что cwd
   git?: string | null // что печатает git rev-parse; null — «не репозиторий»
   dirs?: string[]
   store?: Record<string, unknown>
@@ -122,6 +123,8 @@ function world(on: On, opts: WorldOpts = {}) {
     storeFails: false,
     registerFails: false,
     surfacesFail: false,
+    rootFails: false, // $.session.root() отклонён
+    sid: SID as string, // что отвечает $.session.id(); тест меняет его, как /clear
     seedId: undefined as string | undefined,
     openedAt: undefined as number | undefined,
     appRecordAfterMs: undefined as number | undefined,
@@ -147,9 +150,10 @@ function world(on: On, opts: WorldOpts = {}) {
 
   on('session.id', async () => {
     if (startGate) await startGate
-    return { value: SID }
+    return { value: w.sid }
   })
   on('session.cwd', () => ({ value: opts.cwd ?? '/r/sub' }))
+  on('session.root', () => (w.rootFails ? { deny: 'no root' } : { value: opts.root ?? opts.cwd ?? '/r/sub' }))
   on('session.surfaces', () => (w.surfacesFail ? { deny: 'no roster' } : { value: [...w.surfaces] }))
   on('command.register', (_$, e) => {
     if (w.registerFails) return { deny: 'name taken' }
@@ -555,6 +559,117 @@ test('F-10: not a git repository → <cwd>/docs/handoffs, whatever folders exist
   await begin($, w)
   expect(w.commands[0]!.args).toBe('auto /r/sub/docs/handoffs/HANDOFF_auto_2026-10-08-090507.md')
   expect(w.store.get(`p:${SID}`)).toEqual({ path: '/r/sub/docs/handoffs/HANDOFF_auto_2026-10-08-090507.md', startedAt: T0, root: '/r/sub', writeTurnId: null })
+})
+
+// ---------- F-10: корень проекта = корень сессии от движка, а не текущая папка (живая ошибка 2026-10-11…13) ----------
+//
+// Источник ожиданий: вход теста и спека F-10 в редакции этого исправления (проект — корень сессии, `$.session.root()`;
+// `cd` оболочки во время работы его не двигает), документация движка к `$.session.root()` в claude-code.d.ts («A shell
+// `cd` during the session does not move it»), F-18/F-19 (`cd <корень>`, `wt -d <корень>`, `/D <корень>`), F-20 (запуск
+// в корне). Живой случай: сессия открыта в общей папке (не репозиторий), агент сделал `cd nested-repo` (вложенный
+// репозиторий), `$.session.cwd()` стал `…/nested-repo`, и хендофф лёг в него. Здесь та же форма: корень сессии /r (не
+// репозиторий), текущая папка /r/sub (репозиторий сам по себе). Тесты ниже — единственное место, где корень и текущая
+// папка в мире различаются; во всех остальных тестах root() отвечает то же, что cwd().
+
+// git по папкам: `git -C <папка> rev-parse` печатает указанный корень; для остальных папок остаётся ответ мира
+// (при `git: null` — «не репозиторий», код 128).
+const gitIn = (tops: Record<string, string>) => (argv: readonly string[]) =>
+  argv[0] === 'git' && argv[2] !== undefined && argv[2] in tops ? { exitCode: 0, stdout: `${tops[argv[2]]}\n`, stderr: '' } : undefined
+const SUB_REPO = gitIn({ '/r/sub': '/r/sub' })
+const GIT_AT_R = ['git', '-C', '/r', 'rev-parse', '--show-toplevel']
+// Мир задачи: корень сессии /r (не git), оболочка ушла в /r/sub, где rev-parse удался бы с /r/sub.
+const movedShell = (on: On, extra: WorldOpts = {}) => world(on, { git: null, cwd: '/r/sub', root: '/r', proc: SUB_REPO, ...extra })
+
+test('F-10 session root: root is /r (not a git repo), the shell moved to /r/sub (a repo of its own) → handoff in /r/docs/handoffs, the Mac window cds into /r', async ($, on) => {
+  const w = movedShell(on)
+  await $.session.start(START)
+  await typed($, 'handoff-now')
+  await w.clock.settle()
+  expect(w.procs.map(p => p.argv)).toEqual([GIT_AT_R])
+  expect(w.commands).toEqual([{ command: 'handoff:handoff', args: `auto ${PATH}` }])
+  expect(w.store.get(`p:${SID}`)).toEqual({ path: PATH, startedAt: T0, root: '/r', writeTurnId: null })
+  await writeTurn($, w)
+  expect(w.writes).toEqual([{ path: '/tmp/claude-kit-handoff-2026-10-08-090507.command', text: L.macCommandScript('/r', 'claude', PROMPT) }])
+  expect(w.writes[0]!.text.split('\n')[1]).toBe("cd '/r' || exit 1") // строка pinned в logic.test.ts; здесь важен корень /r
+  expect(w.effects).toContain('cmd:exit')
+})
+
+test('F-10 session root: the same in the desktop app → the background chat starts in /r', async ($, on) => {
+  const w = movedShell(on, { surfaces: ['desktop'], env: { HOME } })
+  w.appRecordAfterMs = 2000
+  await $.session.start(APP_START)
+  await $.session.attach(ATTACH)
+  await typed($, 'handoff-now')
+  await w.clock.settle()
+  await writeTurn($, w)
+  expect(seedArgs(w).init!.cwd).toBe('/r')
+  expect(w.toasts).toEqual([])
+})
+
+const windowsCase = (hasWt: boolean) => async ($: Engine, on: On) => {
+  const w = movedShell(on, { env: { OS: 'Windows_NT' }, wt: hasWt })
+  await $.session.start(START)
+  await typed($, 'handoff-now')
+  await w.clock.settle()
+  await writeTurn($, w)
+  const argv = w.procs[w.procs.length - 1]!.argv
+  expect(argv).toEqual(L.windowsArgv(hasWt, '/r', 'claude', L.windowsPrompt(PROMPT)))
+  // Форма из спеки F-19: `wt -d <корень> …` и `cmd /c start "" /D <корень> …`.
+  expect(argv.slice(0, hasWt ? 3 : 6)).toEqual(hasWt ? ['wt', '-d', '/r'] : ['cmd', '/c', 'start', '', '/D', '/r'])
+}
+test('F-10 session root: the same on Windows with wt → wt -d /r', windowsCase(true))
+test('F-10 session root: the same on Windows without wt → cmd /c start "" /D /r', windowsCase(false))
+
+test('F-10 session root: repo /g, the shell later in /g/pkg → git is asked about /g and the root is /g (unchanged result)', async ($, on) => {
+  const w = world(on, { cwd: '/g/pkg', root: '/g', git: '/g' })
+  await $.session.start(START)
+  await typed($, 'handoff-now')
+  await w.clock.settle()
+  expect(w.procs.map(p => p.argv)).toEqual([['git', '-C', '/g', 'rev-parse', '--show-toplevel']])
+  expect(w.commands).toEqual([{ command: 'handoff:handoff', args: 'auto /g/docs/handoffs/HANDOFF_auto_2026-10-08-090507.md' }])
+  expect(w.store.get(`p:${SID}`)).toEqual({ path: '/g/docs/handoffs/HANDOFF_auto_2026-10-08-090507.md', startedAt: T0, root: '/g', writeTurnId: null })
+})
+
+test('F-10 session root: the session root is a sub-folder of a repo → the root is the repo top (git toplevel of the session root)', async ($, on) => {
+  const w = world(on, { cwd: '/elsewhere', root: '/g/pkg', proc: gitIn({ '/g/pkg': '/g' }) })
+  await $.session.start(START)
+  await typed($, 'handoff-now')
+  await w.clock.settle()
+  expect(w.procs.map(p => p.argv)).toEqual([['git', '-C', '/g/pkg', 'rev-parse', '--show-toplevel']])
+  expect(w.commands[0]!.args).toBe('auto /g/docs/handoffs/HANDOFF_auto_2026-10-08-090507.md')
+})
+
+test('F-10 session root, /clear: the session id changes to sid-2, a new session.start comes from /r/sub, root() still says /r → the root stays /r', async ($, on) => {
+  const w = movedShell(on)
+  await $.session.start({ ...START, cwd: '/r' })
+  w.sid = 'sid-2' // /clear: новый id сессии
+  await $.session.start(START) // перезапуск мода: теперь событие приходит уже из /r/sub
+  await typed($, 'handoff-now')
+  await w.clock.settle()
+  expect(w.procs.map(p => p.argv)).toEqual([GIT_AT_R])
+  expect(w.commands).toEqual([{ command: 'handoff:handoff', args: `auto ${PATH}` }])
+  expect(w.store.get('p:sid-2')).toEqual({ path: PATH, startedAt: T0, root: '/r', writeTurnId: null })
+  expect(w.keys()).toEqual(['p:sid-2', 't:sid-2']) // кроме меток передачи и вопроса, в хранилище ничего нет
+})
+
+test('F-10 session root: root() is refused → the handoff falls back to the current folder of the session', async ($, on) => {
+  const w = world(on, { git: null, cwd: '/q/work', root: '/r' })
+  w.rootFails = true
+  await $.session.start(START)
+  await typed($, 'handoff-now')
+  await w.clock.settle()
+  expect(w.procs.map(p => p.argv)).toEqual([['git', '-C', '/q/work', 'rev-parse', '--show-toplevel']])
+  expect(w.commands[0]!.args).toBe('auto /q/work/docs/handoffs/HANDOFF_auto_2026-10-08-090507.md')
+  expect(w.toasts).toEqual([])
+})
+
+test('F-10 session root: the folder of the session.start event does not matter, session.start writes nothing about it to the store', async ($, on) => {
+  const w = movedShell(on)
+  await $.session.start({ ...START, cwd: '/somewhere/else' })
+  expect(w.keys()).toEqual([])
+  await typed($, 'handoff-now')
+  await w.clock.settle()
+  expect(w.procs.map(p => p.argv)).toEqual([GIT_AT_R])
 })
 
 // ---------- 4. хендофф не записан ----------
