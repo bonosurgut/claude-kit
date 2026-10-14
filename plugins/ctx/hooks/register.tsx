@@ -1,11 +1,14 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, SessionUsage, Timer } from 'claude-code'
+import type { EngineInterface, Register, RenderSurface, SessionUsage, Timer } from 'claude-code'
 import type { CtxOptions, CtxSnapshot } from '../types'
-import { statusLine } from './line'
+import { SEPARATOR, statusLine } from './line'
 
 const snapshot = atom({ plugin: 'ctx', key: 'snapshot' } as const, null as CtxSnapshot | null)
 const lastTurnAt = atom({ plugin: 'ctx', key: 'lastTurnAt' } as const, 0)
+const line = atom({ plugin: 'ctx', key: 'line' } as const, null as string | null)
 
+// Подпись полосы: строку состояния подписывает сам движок (`ctx` / `⚠ ctx:`), полосу — никто.
+const BAND_LABEL = 'ctx' + SEPARATOR
 const NOTHING_KNOWN: CtxSnapshot = { percent: null, rateLimits: [], usd: null }
 const MINUTE_MS = 60_000
 
@@ -21,14 +24,27 @@ function take(u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>): CtxSnap
   }
 }
 
-// Пересобрать строку из state и часов и выставить её; undefined убирает строку.
-// Рисуем строкой состояния под полем ввода ($.ui.status), как решено по пробе S-0
-// (docs/probe-s0.md): её видно и в терминале, и в приложении. Здесь state только читается.
+// Где рисовать. В терминале — строкой состояния под полем ввода ($.ui.status), как решено по
+// пробе S-0 (docs/probe-s0.md). В приложении — полосой над полем ввода (AbovePrompt, хук ниже),
+// а строку состояния убираем, чтобы текст не стоял дважды.
+// JUSTIFIED-BY: приложение 2.37337 ставит строку состояния плагина отдельным рядом под выбором модели, а вернуть её в ряд «Auto / Opus» мод не может: у $.ui.status нет места, SessionMode приложение не рисует, PromptHint не запрашивает (живая проба 2026-10-14) | UPGRADE: если приложение снова поставит строку состояния в ряд «Auto / Opus» или даст выбрать её место — вернуть $.ui.status на всех поверхностях и убрать полосу
+// Строка состояния у плагина одна на все поверхности, а полоса есть только в терминале и приложении,
+// и в терминале мы её не рисуем. Поэтому строку прячем, только когда сессию видит одно приложение:
+// терминал, телефон или VS Code рядом с ним (редко) оставляют её себе.
+function statusHidden(surfaces: readonly RenderSurface[]): boolean {
+  return surfaces.length > 0 && surfaces.every(s => s === 'desktop')
+}
+
+// Пересобрать строку из state и часов, запомнить её для полосы и выставить строку состояния;
+// undefined убирает строку. Список поверхностей не ответил — считаем, что приложения нет.
 async function draw($: EngineInterface, options: CtxOptions) {
   const known = (await read($, snapshot)) ?? NOTHING_KNOWN
   const now = await $.clock.now()
   const last = await read($, lastTurnAt)
-  $.ui.status(statusLine({ ...known, now, lastTurnAt: last }, options))
+  const text = statusLine({ ...known, now, lastTurnAt: last }, options)
+  await update($, line, () => text ?? null)
+  const surfaces = await $.session.surfaces().catch((): readonly RenderSurface[] => [])
+  $.ui.status(statusHidden(surfaces) ? undefined : text)
 }
 
 // Перерисовка из таймера: сбой не глотается молча, а уходит в отладочный журнал.
@@ -99,8 +115,39 @@ export const register: Register = (on, rawOptions) => {
       coldTimer = undefined
       await update($, snapshot, () => null)
       await update($, lastTurnAt, () => 0)
+      await update($, line, () => null)
       $.ui.status(undefined)
     }
     return next(e)
+  })
+
+  // Приложение подключается к сессии обычно уже после старта: строку состояния тогда надо убрать,
+  // а при отключении — вернуть.
+  on('session.attach', async ($, e, next) => {
+    const joined = await next(e)
+    await draw($, options)
+    return joined
+  })
+
+  on('session.detach', async ($, e, next) => {
+    const left = await next(e)
+    await draw($, options)
+    return left
+  })
+
+  // Полоса над полем ввода в приложении: та же строка с подписью «ctx», приглушённым текстом. Уступает опросу
+  // приложения; полосы других модов (то, что ниже по цепочке) остаются под нашей строкой.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.surface !== 'desktop' || e.props.hasSurvey) return next(e)
+    const text = await read($, line)
+    if (text === null) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const theirs = await next(e)
+    return (
+      <Box flexDirection="column">
+        <Text dimColor wrap="truncate-end">{BAND_LABEL + text}</Text>
+        {theirs}
+      </Box>
+    )
   })
 }

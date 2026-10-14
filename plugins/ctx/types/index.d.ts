@@ -17,7 +17,8 @@ export type CtxSnapshot = {
 declare module 'claude-code' {
   interface PluginState {
     // snapshot: последние показания; lastTurnAt: когда кончился последний ход
-    // главной сессии, в миллисекундах по $.clock.now() (0, пока ходов не было).
-    ctx: { snapshot: CtxSnapshot | null; lastTurnAt: number }
+    // главной сессии, в миллисекундах по $.clock.now() (0, пока ходов не было);
+    // line: последняя собранная строка (null — рисовать нечего), её читает полоса над полем ввода в приложении.
+    ctx: { snapshot: CtxSnapshot | null; lastTurnAt: number; line: string | null }
   }
 }
