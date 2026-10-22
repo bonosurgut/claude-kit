@@ -2,8 +2,10 @@ import { test, expect, mock } from 'claude-code/testing'
 import type { On, RenderSurface, SessionRateLimit, SessionUsage } from 'claude-code'
 
 // Строка ctx в приложении (вкладка Code) рисуется в полосе над полем ввода (AbovePrompt), а не
-// строкой состояния: приложение 2.37337 ставит строку состояния плагина отдельным рядом под
-// выбором модели, и мод не может вернуть её в ряд «Auto / Opus» (живая проба 2026-10-14, ledger).
+// строкой состояния: приложение 3.1623.1 рисует строку состояния плагина в нижнем ряду слева от
+// модели, а этот ряд узкий для строки шкал (живая проба 2026-10-22, спека ctx 0.2.0). Поэтому, когда
+// сессию видит одно приложение, строка состояния — короткое имя папки сессии (F-25, правила и
+// примеры имени — folder.test.ts), а шкалы остаются только в полосе.
 // В терминале всё по-старому: строка состояния под полем ввода, полоса пустая.
 // Подпись «ctx» в полосе ставит сам плагин: строку состояния подписывал движок (`ctx` в приложении,
 // `⚠ ctx:` в терминале), а у полосы подписи нет — без неё строку не узнать (живая проверка 2026-10-14).
@@ -15,6 +17,10 @@ const T0 = 1_000_000
 const MIN = 60_000
 const START = { cwd: '/work', surface: 'desktop', isInteractive: false } as const
 const LABEL = 'ctx   '
+// Папка сессии в этом мире — пример из спеки: домашняя /Users/anna, сессия в /Users/anna/Desktop/CLAUDE/claude-kit
+// -> `CLAUDE/claude-kit`. Текущая папка (/work) от корня сессии нарочно отличается: имя берётся из корня.
+const ROOT = '/Users/anna/Desktop/CLAUDE/claude-kit'
+const FOLDER = 'CLAUDE/claude-kit'
 const BAND = { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 93, scroll: { offset: 0, bodyRows: 1 }, view: {} }
 
 const usageOf = (over: Partial<SessionUsage> = {}): SessionUsage => ({
@@ -25,9 +31,13 @@ const usageOf = (over: Partial<SessionUsage> = {}): SessionUsage => ({
 })
 
 // Мир под плагином: часы, перехват $.ui.status, список поверхностей, который тест меняет
-// по ходу (подключение и отключение клиентов), и «дно» для наблюдаемых событий.
+// по ходу (подключение и отключение клиентов), корень и текущая папка сессии, переменные
+// окружения и «дно» для наблюдаемых событий.
 function world(on: On, surfaces: RenderSurface[], usage: SessionUsage = usageOf()) {
   const clock = mock.clock(on, { now: T0 })
+  mock.env(on, { HOME: '/Users/anna' })
+  on('session.root', () => ({ value: ROOT }))
+  on('session.cwd', () => ({ value: '/work' }))
   const shown: (string | undefined)[] = []
   const roster = { now: [...surfaces] }
   on('ui.status', (_$, e) => {
@@ -66,10 +76,12 @@ async function bandText(band: { findAll: (q: { type: string }) => Promise<{ text
   return (await band.findAll({ type: 'Text' })).map(t => t.text).join('|')
 }
 
-test('desktop: the line is drawn in the band above the prompt as one dim Text over what lies below, and the status line is cleared', async ($, on) => {
+// Изменено в 0.2.0 (F-25): раньше здесь ждали `[undefined]` — в приложении строку состояния прятали.
+// Теперь в ней стоит папка сессии, а шкалы в строку состояния не попадают.
+test('desktop: the line is drawn in the band above the prompt as one dim Text over what lies below, and the status line holds the folder, not the gauges', async ($, on) => {
   const w = world(on, ['desktop'])
   await $.session.measure(measureArg(62, [{ kind: 'five_hour', percentUsed: 14 }], 1.84))
-  expect(w.shown).toEqual([undefined])
+  expect(w.shown).toEqual([FOLDER])
   const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
   const texts = await band.findAll({ type: 'Text' })
   expect(texts.map(t => t.text)).toEqual([LABEL + '🔴 ▪▪▪▪▪▫▫▫ 62%   5ч ▪▫▫▫▫▫▫▫ 14%   $1.84', 'below'])
@@ -104,16 +116,18 @@ test('desktop with a phone attached: the status line is kept, the phone has no b
   expect(w.last()).toBe('▪▫▫▫▫▫▫▫ 10%')
 })
 
-test('the app attaching after the start clears the status line; detaching brings it back', async ($, on) => {
+// Изменено в 0.2.0 (F-25): подключение приложения раньше гасило строку состояния (`undefined`),
+// теперь переключает её на папку; отключение, как и раньше, возвращает строку ctx.
+test('the app attaching after the start switches the status line to the folder; detaching brings the ctx line back', async ($, on) => {
   const w = world(on, [], usageOf({ context: { window: 200_000, percent: 10 } }))
   await $.session.start(START)
   expect(w.shown).toEqual(['▪▫▫▫▫▫▫▫ 10%'])
   w.roster.now = ['desktop']
   await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
-  expect(w.shown).toEqual(['▪▫▫▫▫▫▫▫ 10%', undefined])
+  expect(w.shown).toEqual(['▪▫▫▫▫▫▫▫ 10%', FOLDER])
   w.roster.now = []
   await $.session.detach({ surface: 'desktop', clientId: 'desktop:default' })
-  expect(w.shown).toEqual(['▪▫▫▫▫▫▫▫ 10%', undefined, '▪▫▫▫▫▫▫▫ 10%'])
+  expect(w.shown).toEqual(['▪▫▫▫▫▫▫▫ 10%', FOLDER, '▪▫▫▫▫▫▫▫ 10%'])
 })
 
 test('desktop: the band follows the cache timer minute by minute and goes cold at 5 min', async ($, on) => {
@@ -127,9 +141,10 @@ test('desktop: the band follows the cache timer minute by minute and goes cold a
   expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%   кэш ◷ 1м' + BELOW)
   await w.clock.advance(4 * MIN)
   expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%   кэш остыл' + BELOW)
-  // start, turn, tick at +1 min, ticks at +2..+4 min and the cold edge at +5 — every draw cleared the status line
-  expect(w.shown.length).toBeGreaterThan(0)
-  expect(w.shown.filter(line => line !== undefined)).toEqual([])
+  // Изменено в 0.2.0 (F-25): каждая перерисовка раньше гасила строку состояния, теперь ставит в неё папку.
+  // Перерисовок восемь, посчитано по входу: start (1), конец хода (1), минутные тики через 1, 2, 3, 4 и 5 минут
+  // после конца хода (5) и момент остывания кэша через 5 минут (1); ни одна не оставила в строке ничего, кроме папки.
+  expect(w.shown).toEqual(Array(8).fill(FOLDER))
 })
 
 test('desktop: the band yields to a survey and draws again when it is gone', async ($, on) => {
