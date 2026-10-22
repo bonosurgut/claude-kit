@@ -531,3 +531,34 @@ test('isWrittenSince: tolerance edge 7999/8000, mtime 0 is a time and not "missi
   expect(L.isWrittenSince(0, 1_000)).toBe(true)
   expect(L.isWrittenSince(0, 10_000)).toBe(false)
 })
+
+// ---------- /handoff-now внутри короткой фразы ----------
+
+// Живой случай 2026-10-15: в чат ушло «ок /handoff-now». Командой Claude Code считает только сообщение, которое
+// начинается со «/», поэтому мод её не получил, а Claude сделал ручной хендофф без новой сессии. Ожидания ниже
+// выписаны из этого случая и из спеки (короткое согласие + команда; со слэшем или без; всё прочее — обычный текст).
+test('handoff-now phrase: short lead-in words plus the command, with or without the slash, any case', () => {
+  for (const text of ['ок /handoff-now', 'ок handoff-now', 'давай /handoff-now!', 'ОК /HANDOFF-NOW', 'ok, /handoff-now.',
+    '  да давай   /handoff-now  ', 'handoff-now', 'поехали handoff-now', 'Окей, давай /handoff-now',
+    'давай /handoff-now)', 'ок) /handoff-now', 'ок: /handoff-now', 'ок — /handoff-now', 'ок /handoff-now :)']) {
+    expect([text, L.isHandoffNowPhrase(text)]).toEqual([text, true])
+  }
+})
+
+test('handoff-now phrase: a real slash command, a question about it, anything after it or other words are not it', () => {
+  for (const text of ['/handoff-now', ' /handoff-now', 'почему /handoff-now не сработал', 'ок /handoff-now и потом ещё',
+    '`/handoff-now`', 'ок `/handoff-now`', 'как работает handoff-now', 'сделай /handoff-now', 'ок /handoff-now2',
+    'ок /handoff-nowx', 'ок /handoff', 'ок', '', 'ок /handoff-now /handoff-now', 'ок /handoff-now?', 'ок /handoff-now ещё']) {
+    expect([text, L.isHandoffNowPhrase(text)]).toEqual([text, false])
+  }
+})
+
+test('machine origins are not intercepted; the user and unknown kinds are', () => {
+  for (const kind of ['plugin', 'peer', 'peer-send-message', 'projects-relay', 'channel', 'coordinator', 'observer',
+    'observer-activity', 'scheduled-trigger', 'task-notification', 'slack-ping']) {
+    expect([kind, L.isMachineOrigin(kind)]).toEqual([kind, true])
+  }
+  for (const kind of ['composer', 'bridge', 'sdk', 'unclassified', 'auto-continuation']) {
+    expect([kind, L.isMachineOrigin(kind)]).toEqual([kind, false])
+  }
+})

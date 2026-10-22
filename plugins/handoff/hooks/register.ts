@@ -26,6 +26,7 @@ type State = {
   restoreOnAttach: boolean // сессия стартовала неинтерактивной, и доводка метки передачи ещё не сделана
   booting: boolean // session.start ещё идёт: id сессии может быть не известен, метку читать рано
   attachSeen: boolean // клиент подключился, пока шёл session.start неинтерактивной сессии
+  runningTurns: Set<string> // id ходов, которые начались и ещё не закончились (главная сессия и субагенты)
 }
 
 const WAIT_MS = 15 * 60_000 // сколько ждать файл хендоффа (F-17)
@@ -113,13 +114,16 @@ async function fallback($: Eng, prompt: string, why: string, where: Where) {
 // Корень проекта (F-10) считается от корня сессии, который отдаёт движок ($.session.root()): там, где сессия началась,
 // или куда её унесли `/cd`, смена папки хостом или перенос в рабочее дерево. `cd` оболочки во время работы корень не двигает,
 // а текущая папка ($.session.cwd()) за ним уходит: так хендофф лёг во вложенный репозиторий, куда агент зашёл (живая ошибка).
-async function projectRoot($: Eng): Promise<{ root: string; isGit: boolean }> {
-  let cwd: string
+async function sessionRoot($: Eng): Promise<string> {
   try {
-    cwd = await $.session.root()
+    return await $.session.root()
   } catch {
-    cwd = await $.session.cwd() // root() не ответил (его может отклонить хук): лучше текущая папка, чем сорванная передача
+    return $.session.cwd() // root() не ответил (его может отклонить хук): лучше текущая папка, чем сорванная передача
   }
+}
+
+async function projectRoot($: Eng): Promise<{ root: string; isGit: boolean }> {
+  const cwd = await sessionRoot($)
   const r = await $.process.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], { timeoutMs: 5000 }).catch(() => null)
   const top = r?.exitCode === 0 ? r.stdout.trim() : ''
   // Обратные слэши (Windows) заменяются прямыми: logic.ts склеивает пути через `/`.
@@ -389,6 +393,16 @@ async function restorePending($: Eng, s: State) {
   await armTimeout($, s, p)
 }
 
+// Просьба «передай сейчас» — командой /handoff-now или фразой «ок /handoff-now»: запускает передачу, если она ещё не
+// идёт, и возвращает текст для человека.
+function requestHandoff($: Eng, s: State): string {
+  const current = s.pending ?? s.launching
+  if (current) return `Передача уже идёт: ${current.path}`
+  if (s.starting) return 'Передача уже запускается'
+  detach($, 'запуск передачи', () => start($, s))
+  return 'Пишу хендофф; потом коммит и новая сессия'
+}
+
 async function registerCommand($: Eng) {
   try {
     await $.command.register({ name: 'handoff-now', description: 'Передать работу в новую сессию сейчас' })
@@ -411,6 +425,7 @@ export const register: Register = (on, options) => {
     restoreOnAttach: false,
     booting: false,
     attachSeen: false,
+    runningTurns: new Set(),
   }
 
   on('session.start', async ($, e, next) => {
@@ -454,15 +469,34 @@ export const register: Register = (on, options) => {
     return joined
   })
 
-  on('command.run', { command: 'handoff-now' }, async $ => {
-    const current = s.pending ?? s.launching
-    if (current) return { text: `Передача уже идёт: ${current.path}` }
-    if (s.starting) return { text: 'Передача уже запускается' }
-    detach($, 'запуск передачи', () => start($, s))
-    return { text: 'Пишу хендофф; потом коммит и новая сессия' }
+  on('command.run', { command: 'handoff-now' }, async $ => ({ text: requestHandoff($, s) }))
+
+  // Ручной хендофф (F-13) ищет цепочку и пишет файл там же, где автоматический: в папке, где началась сессия, а не
+  // там, куда Claude перешёл (`cd`). Папку знает только мод, поэтому он дописывает её в текст скилла строкой
+  // SESSION_ROOT; SKILL.md передаёт её gather.py как --root (живой случай 2026-10-15: цепочка разъехалась по двум папкам).
+  on('skill.prompt', async ($, e, next) => {
+    const r = await next(e)
+    if (e.skill !== 'handoff:handoff' && e.skill !== 'handoff') return r
+    return { text: `${r.text}\nSESSION_ROOT: ${await sessionRoot($)}\n` }
+  })
+
+  // Команда срабатывает, только если сообщение с неё начинается. «ок /handoff-now» ушло бы в Claude обычным текстом,
+  // и он сделал бы ручной хендофф без новой сессии (живой случай 2026-10-15). Такую короткую фразу мод узнаёт сам и
+  // в Claude её не пускает. Сообщения от других сессий и плагинов не трогаем. Пока Claude отвечает, передачу не
+  // начинаем: просим отправить ещё раз.
+  on('prompt.submit', async ($, e, next) => {
+    if (!L.isHandoffNowPhrase(e.text) || (e.origin && L.isMachineOrigin(e.origin.kind))) return next(e)
+    // Передача уже идёт (Claude, может быть, как раз пишет хендофф) — ответ «уже идёт», а не «отправь снова»:
+    // повторная фраза после открытия нового чата начала бы вторую передачу.
+    // Приложение держит набранное во время ответа сообщение в очереди и отдаёт его после конца хода, но с id того
+    // хода (живая проверка 2026-10-16): ход уже закончился — просить подождать незачем.
+    const busy = s.pending !== null || s.launching !== null || s.starting
+    if (e.turnId && s.runningTurns.has(e.turnId) && !busy) return { drop: 'Claude ещё отвечает: дождись конца ответа и отправь /handoff-now снова' }
+    return { drop: requestHandoff($, s) }
   })
 
   on('turn.start', async ($, e, next) => {
+    s.runningTurns.add(e.turnId)
     const p = s.pending
     if (p && !p.writeTurnId && e.text.includes(p.path)) {
       p.writeTurnId = e.turnId
@@ -472,6 +506,7 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    s.runningTurns.delete(e.turnId)
     if (!e.agentId) await guarded($, 'проверка файла хендоффа', () => check($, s, { turnId: e.turnId, isAborted: e.isAborted }))
     return next(e)
   })

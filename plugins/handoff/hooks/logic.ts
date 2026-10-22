@@ -135,3 +135,28 @@ export const openUrlArgv = (isWindows: boolean, url: string): string[] =>
 // передачи минус допуск 2 секунды. Нет времени изменения (файла нет) → false.
 export const isWrittenSince = (mtimeMs: number | undefined, startedAt: number) =>
   mtimeMs !== undefined && mtimeMs >= startedAt - 2000
+
+// ---------- /handoff-now внутри короткой фразы ----------
+
+// Слова согласия, которые могут стоять перед командой: «ок /handoff-now», «давай handoff-now».
+// Список закрытый: «почему /handoff-now не сработал» или «как работает handoff-now» — вопрос, а не просьба.
+export const HANDOFF_NOW_LEADS: readonly string[] = [
+  'ок', 'окей', 'ok', 'okay', 'да', 'давай', 'ага', 'ну', 'ладно', 'хорошо', 'поехали', 'запускай', 'пожалуйста', 'го', 'go', 'yes',
+]
+// Между словами и после команды допускаются знаки, которыми люди обычно разбавляют фразу: «ок: …», «ок — …», «…)», «… :)».
+const HANDOFF_NOW_RE = new RegExp(`^(?:(?:${HANDOFF_NOW_LEADS.join('|')})[\\s,.!:)—]+)*/?handoff-now[\\s.!:)]*$`)
+
+// Короткая фраза «<согласие> /handoff-now» (слэш необязателен, регистр любой). Сообщение, которое начинается со «/»,
+// сюда не попадает: это настоящая команда, её ведёт движок.
+export function isHandoffNowPhrase(text: string): boolean {
+  const t = text.trim().toLowerCase()
+  return !t.startsWith('/') && HANDOFF_NOW_RE.test(t)
+}
+
+// Откуда пришло сообщение (PromptOrigin.kind): от машины (другая сессия, плагин, расписание, канал) — фразу не
+// перехватываем. Всё остальное считаем человеком: какой вид ставит набранному тексту приложение, не известно.
+const MACHINE_ORIGINS = new Set([
+  'plugin', 'peer', 'peer-send-message', 'projects-relay', 'channel', 'coordinator', 'observer', 'observer-activity',
+  'scheduled-trigger', 'task-notification', 'slack-ping',
+])
+export const isMachineOrigin = (kind: string): boolean => MACHINE_ORIGINS.has(kind)

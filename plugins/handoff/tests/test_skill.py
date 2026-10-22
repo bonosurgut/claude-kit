@@ -606,7 +606,7 @@ def test_auto_mode_passes_handoff_dir_and_manual_mode_does_not(text):
     assert '--handoff-dir' not in manual
     paragraph = step1_auto_paragraph(text)
     assert 'add `--handoff-dir "<folder of the target path>"` to this same call' in paragraph
-    assert paragraph.endswith('Manual mode: no such option.')
+    assert '--root' not in paragraph
     # the one documented command line (manual mode's) is unchanged: no fenced block carries the option
     assert '--handoff-dir' not in command_template(text, 'gather.py')
     assert not [b for b in fences(text) if '--handoff-dir' in b]
@@ -655,4 +655,72 @@ def test_gather_call_with_handoff_dir_is_still_matched_by_exactly_its_own_rule(t
     rules = [r for r in frontmatter(text)['allowed-tools'] if r.startswith('Bash(')]
     # the call as the text writes it: the script and the folder in double quotes, the option after the tag
     cmd = f'{interp} "{script}" tt --handoff-dir "{folder}"'
+    assert [r for r in rules if bash_rule_matches(r, cmd)] == [f'Bash({interp} *handoff*gather.py*)']
+
+
+# --- manual mode looks things up in the folder the session started in (live case 2026-10-15) ----------------------
+#
+# Source of the expected behaviour: the user's report. The session started in «Мой проект» (not a repository), Claude
+# `cd`-ed into a nested repository, a manual handoff landed there while the chain's parent lay in the start folder.
+# The mod appends `SESSION_ROOT: <folder>` to the skill's text (register.ts); manual mode hands it to gather as --root.
+
+REGISTER_TS = Path(__file__).parents[1] / 'hooks/register.ts'
+
+
+def step1_manual_paragraph(text):
+    step1 = section(text, '## Step 1: Gather — ONE Bash call')
+    return next(p for p in step1.split('\n\n') if p.startswith('**Manual mode:**'))
+
+
+def test_manual_mode_passes_the_session_root_and_auto_mode_does_not(text):
+    auto, manual = mode_blocks(text)
+    assert '--root' in manual and '--root' not in auto
+    paragraph = step1_manual_paragraph(text)
+    assert 'add `--root "<session root>"` to this same call' in paragraph
+    assert '`SESSION_ROOT:`' in paragraph
+    assert 'primary working directory' in paragraph                               # without the mod
+    assert '--root' not in command_template(text, 'gather.py')                      # the fenced command is unchanged
+    assert not [b for b in fences(text) if '--root' in b]
+
+
+def test_the_marker_the_skill_reads_is_the_one_the_mod_writes(text):
+    mod = REGISTER_TS.read_text(encoding='utf-8')
+    assert re.search(r'`\$\{r\.text\}\\nSESSION_ROOT: \$\{await sessionRoot\(\$\)\}\\n`', mod)
+    assert '`SESSION_ROOT:`' in step1_manual_paragraph(text)
+
+
+def test_the_python_missing_fallback_also_uses_the_session_root_in_manual_mode(text):
+    step1 = next(l for l in section(text, '## If Python is missing').splitlines() if l.startswith('- **Step 1:**'))
+    assert ('Manual mode: every git command of this step is run as `git -C "<session root>"`, and outside git '
+            '`HANDOFF_DIR` is `docs/handoffs` in the session root.') in step1
+
+
+def documented_root_args(text, folder):
+    m = re.search(r'add `(--root "<session root>")`', step1_manual_paragraph(text))
+    assert m
+    return shlex.split(m.group(1).replace('<session root>', str(folder)))
+
+
+def test_documented_gather_call_with_root_reads_the_start_folder_not_the_shell_folder(text, tmp_path, make_repo):
+    start = tmp_path / 'Мой проект'                                             # not a repository; space in the name
+    shell = make_repo(start / 'tender-automation-main-wt')                     # where the shell has moved to
+    (start / 'docs/handoffs').mkdir(parents=True)
+    (start / 'docs/handoffs/HANDOFF_tt_start.md').write_text('**Chain:** `tt` seq `77`\n', encoding='utf-8')
+    (shell / 'docs/superpowers/handoffs').mkdir(parents=True)
+    (shell / 'docs/superpowers/handoffs/HANDOFF_tt_shell.md').write_text('**Chain:** `tt` seq `5`\n', encoding='utf-8')
+    argv = build(command_template(text, 'gather.py'), {'[chain_tag]': 'tt'}) + documented_root_args(text, start)
+    out = sh(argv, shell).splitlines()
+    assert f'ROOT: {start}' in out
+    assert f'HANDOFF_DIR: {start / "docs" / "handoffs"}' in out
+    assert [l for l in out if 'tt_shell' in l] == []
+    assert [l for l in out if l.startswith('HANDOFF_tt_')] == ['HANDOFF_tt_start.md | `tt` seq `77` | ', 'HANDOFF_tt_start.md | `tt` seq `77`']
+
+
+@pytest.mark.parametrize('interp, script, folder', [
+    ('python3 -I', f'{POSIX_BASES[0]}/scripts/gather.py', '/Users/anna/Мой проект'),
+    ('py -3 -I', f'{WINDOWS_BASE}\\scripts\\gather.py', 'C:\\Users\\Anna\\Общая папка'),
+])
+def test_gather_call_with_root_is_still_matched_by_exactly_its_own_rule(text, interp, script, folder):
+    rules = [r for r in frontmatter(text)['allowed-tools'] if r.startswith('Bash(')]
+    cmd = f'{interp} "{script}" tt --root "{folder}"'
     assert [r for r in rules if bash_rule_matches(r, cmd)] == [f'Bash({interp} *handoff*gather.py*)']

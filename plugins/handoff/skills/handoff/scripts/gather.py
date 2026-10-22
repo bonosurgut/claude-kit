@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Handoff state gatherer: everything Step 1 of the handoff skill needs in ONE call.
 
-Usage: python3 -I gather.py [chain_tag] [--handoff-dir ABSOLUTE_FOLDER]
-       (Windows: py -3 -I gather.py [chain_tag] [--handoff-dir ABSOLUTE_FOLDER])
+Usage: python3 -I gather.py [chain_tag] [--handoff-dir ABSOLUTE_FOLDER | --root ABSOLUTE_FOLDER]
+       (Windows: py -3 -I gather.py [chain_tag] [--handoff-dir ABSOLUTE_FOLDER | --root ABSOLUTE_FOLDER])
 
 Cross-platform port of the original gather.sh: written for Python 3.8+, standard
 library only, git is the only external program. Prints `KEY: value` lines and
 `--- section` blocks, in this order:
   - ROOT; BRANCH, LATEST_V_TAG and the sections recent commits / uncommitted / diff
     stat only inside a git repository; NOT_GIT otherwise (the current folder, or with
-    --handoff-dir that folder, is then the root), and before it GIT_ERROR when git
+    --handoff-dir / --root that folder, is then the root), and before it GIT_ERROR when git
     started but failed for a reason other than "not a git repository" (a damaged .git,
     dubious ownership, ...);
   - HANDOFF_DIR and FRESH_STANDALONE_TAG, always;
@@ -18,8 +18,12 @@ library only, git is the only external program. Prints `KEY: value` lines and
     section, followed by the newest candidate's `Where We're Going` lines.
 
 Which folder is looked at:
-  - without --handoff-dir (manual mode): the current folder. The repository is the one that
-    contains it, and the handoff folder is picked by pick_handoff_dir below;
+  - with --root (manual mode, where the skill knows the folder the session started in): that
+    folder, whatever the current folder is. The repository is the one that contains it, and the
+    handoff folder is picked by pick_handoff_dir below; outside git the folder itself is the root.
+    The folder must exist and be absolute. So after a `cd` into a nested repository a manual
+    handoff still lands where an auto handoff of the same session would;
+  - with neither option (manual mode without the start folder): the current folder, the same way;
   - with --handoff-dir (auto mode, where the mod has already chosen the folder of the file
     to write): that folder, whatever the current folder is. HANDOFF_DIR is exactly that
     folder (it may not exist yet; the skill creates it), the git state is the state of the
@@ -28,7 +32,7 @@ Which folder is looked at:
     be absolute: a relative one would silently mean "relative to the current folder", which
     is the very thing the option exists to avoid.
 
-Handoff folder without --handoff-dir (pick_handoff_dir):
+Handoff folder without --handoff-dir (pick_handoff_dir; "current folder" below is the --root folder when given):
   - inside a git repository: the first existing of docs/superpowers/handoffs,
     plans/handoffs, docs/handoffs, .claude/handoffs (relative to the repository root);
     when none exists: docs/superpowers/handoffs if docs/superpowers exists, else
@@ -211,37 +215,51 @@ def print_chain(d, tag):
 
 
 def usage_error(message):
-    print(f'gather.py: {message}\nusage: gather.py [chain_tag] [--handoff-dir ABSOLUTE_FOLDER]', file=sys.stderr)
+    print(f'gather.py: {message}\nusage: gather.py [chain_tag] [--handoff-dir ABSOLUTE_FOLDER | --root ABSOLUTE_FOLDER]',
+          file=sys.stderr)
     sys.exit(2)
 
 
+def option_folder(words, name):
+    """The absolute folder after option `name`; a missing or relative one is a usage error."""
+    folder = next(words, '')
+    if not folder:
+        usage_error(f'{name} needs a folder')
+    if not Path(folder).is_absolute():
+        usage_error(f'{name} must be an absolute path, got {folder!r}')
+    return Path(folder)
+
+
 def parse_args(argv):
-    """(chain_tag, handoff folder or None). The first word that is not an option is the tag; further
-    words are ignored, as they were before the option existed. Any other `--option` is an error: a
-    misspelled --handoff-dir must not quietly fall back to the current folder, the very thing the
-    option exists to avoid."""
-    tag, folder, has_tag = '', None, False
+    """(chain_tag, handoff folder or None, session root or None). The first word that is not an option is
+    the tag; further words are ignored, as they were before the options existed. Any other `--option` is
+    an error: a misspelled option must not quietly fall back to the current folder, the very thing the
+    options exist to avoid. --handoff-dir (auto mode) and --root (manual mode) exclude each other."""
+    tag, folder, root, has_tag = '', None, None, False
     words = iter(argv[1:])
     for arg in words:
         if arg == '--handoff-dir':
-            folder = next(words, '')
-            if not folder:
-                usage_error('--handoff-dir needs a folder')
-            if not Path(folder).is_absolute():
-                usage_error(f'--handoff-dir must be an absolute path, got {folder!r}')
+            folder = option_folder(words, '--handoff-dir')
+        elif arg == '--root':
+            root = option_folder(words, '--root')
         elif arg.startswith('--'):
             usage_error(f'unknown option {arg}')
         elif not has_tag:
             tag, has_tag = arg, True
-    return tag, Path(folder) if folder else None
+    if folder is not None and root is not None:
+        usage_error('--root and --handoff-dir cannot be used together')
+    if root is not None and not root.is_dir():
+        usage_error(f'--root folder does not exist: {root}')
+    return tag, folder, root
 
 
 def main(argv):
     sys.stdout.reconfigure(encoding='utf-8')
-    tag, given = parse_args(argv)
+    tag, given, start = parse_args(argv)
 
-    # The folder git is asked about: the current one, or (--handoff-dir) the handoff folder itself.
-    looked_at = nearest_existing(given) if given is not None else None
+    # The folder git is asked about: the current one, the session root (--root), or (--handoff-dir) the
+    # handoff folder itself.
+    looked_at = nearest_existing(given) if given is not None else start
     kind, detail = find_git_root(looked_at)
     is_git = kind == 'ok'
     if is_git:
@@ -249,8 +267,9 @@ def main(argv):
         print(f'ROOT: {root}')
         print_git_state(root)
     else:
-        root = given if given is not None else Path.cwd()
-        which = 'the given handoff folder' if given is not None else 'the current folder'
+        root = given if given is not None else start if start is not None else Path.cwd()
+        which = ('the given handoff folder' if given is not None
+                 else 'the given session root' if start is not None else 'the current folder')
         print(f'ROOT: {root}')
         if kind == 'error':
             print(f'GIT_ERROR: {detail}')

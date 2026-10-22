@@ -579,6 +579,9 @@ def test_gather_handoff_dir_git_missing_is_reported_as_in_manual_mode(tmp_path, 
     assert d['HANDOFF_DIR'] == str(a / 'x' / 'docs' / 'handoffs')
 
 
+USAGE = 'usage: gather.py [chain_tag] [--handoff-dir ABSOLUTE_FOLDER | --root ABSOLUTE_FOLDER]'
+
+
 @pytest.mark.parametrize('args, message', [
     (['--handoff-dir'], '--handoff-dir needs a folder'),
     (['--handoff-dir', ''], '--handoff-dir needs a folder'),
@@ -591,7 +594,7 @@ def test_gather_handoff_dir_bad_arguments_stop_with_a_usage_error(tmp_path, run_
     # a misspelt or relative folder must not quietly mean "the current folder"
     out = run_fail('gather.py', *args, cwd=make_repo(tmp_path / 'b'))
     assert out.splitlines()[0] == f'gather.py: {message}'
-    assert out.splitlines()[1] == 'usage: gather.py [chain_tag] [--handoff-dir ABSOLUTE_FOLDER]'
+    assert out.splitlines()[1] == USAGE
     assert 'ROOT:' not in out
 
 
@@ -616,3 +619,63 @@ def test_nearest_existing_walks_up_to_a_real_folder(tmp_path):
     assert g.nearest_existing(tmp_path / 'one' / 'two' / 'three') == tmp_path / 'one'
     assert g.nearest_existing(tmp_path / 'file.txt' / 'inside') == tmp_path                # a file is not a folder
     assert g.nearest_existing(tmp_path / 'file.txt') == tmp_path
+
+
+# ---------- --root: manual mode looks at the folder the session started in ----------
+# Live case 2026-10-15: the session started in a plain folder, Claude `cd`-ed into a nested repository, and a manual
+# handoff landed in that repository while the chain's parent lay in the start folder. With --root (the session's
+# start folder, which the handoff mod hands to the skill) manual mode looks where auto mode looks.
+
+def test_gather_root_wins_over_the_current_folder(tmp_path, run, make_repo):
+    a = make_repo(tmp_path / 'a')
+    b = make_repo(tmp_path / 'b')
+    make_chain_file(a / 'docs/handoffs', 'HANDOFF_t1_from-a.md', '`t1` seq `3`', 'step from A')
+    make_chain_file(b / 'docs/handoffs', 'HANDOFF_t1_from-b.md', '`t1` seq `9`', 'step from B')
+    out = run('gather.py', 't1', '--root', a, cwd=b)
+    d = lines(out)
+    assert d['ROOT'] == str(a)
+    assert d['HANDOFF_DIR'] == str(a / 'docs' / 'handoffs')
+    assert between(out, "--- chain candidates for 't1'", "--- newest candidate's") == ['HANDOFF_t1_from-a.md | `t1` seq `3`']
+    assert 'from-b' not in out
+
+
+def test_gather_root_inside_a_repository_uses_the_repository_root(tmp_path, run, make_repo):
+    a = make_repo(tmp_path / 'a')
+    (a / 'src' / 'deep').mkdir(parents=True)
+    d = lines(run('gather.py', '--root', a / 'src' / 'deep', cwd=tmp_path))
+    assert d['ROOT'] == str(a)
+    assert d['HANDOFF_DIR'] == f"{a / 'docs' / 'handoffs'} (does not exist yet — create it)"
+
+
+def test_gather_root_outside_git_is_the_root_and_holds_docs_handoffs(tmp_path, run, make_repo):
+    # the live case: the start folder is not a repository, the nested one (where the shell is) is
+    start = tmp_path / 'Мой проект'
+    nested = make_repo(start / 'tender-automation')
+    make_chain_file(start / 'docs/handoffs', 'HANDOFF_s_77.md', '`s` seq `77`', 'step 77')
+    make_chain_file(nested / 'docs/superpowers/handoffs', 'HANDOFF_s_x.md', '`s` seq `5`', 'wrong place')
+    out = run('gather.py', 's', '--root', start, cwd=nested)
+    d = lines(out)
+    assert d['NOT_GIT'] == 'yes — no git repository found, using the given session root'
+    assert d['ROOT'] == str(start)
+    assert d['HANDOFF_DIR'] == str(start / 'docs' / 'handoffs')
+    assert 'BRANCH' not in d
+    assert between(out, "--- chain candidates for 's'", "--- newest candidate's") == ['HANDOFF_s_77.md | `s` seq `77`']
+
+
+@pytest.mark.parametrize('args, message', [
+    (['--root'], '--root needs a folder'),
+    (['--root', 'rel/dir'], "--root must be an absolute path, got 'rel/dir'"),
+    (['--root', '/', '--handoff-dir', '/tmp/x'], '--root and --handoff-dir cannot be used together'),
+    (['--handoff-dir', '/tmp/x', '--root', '/'], '--root and --handoff-dir cannot be used together'),
+])
+def test_gather_root_bad_arguments_stop_with_a_usage_error(tmp_path, run_fail, make_repo, args, message):
+    out = run_fail('gather.py', *args, cwd=make_repo(tmp_path / 'b'))
+    assert out.splitlines()[0] == f'gather.py: {message}'
+    assert out.splitlines()[1] == USAGE
+    assert 'ROOT:' not in out
+
+
+def test_gather_root_that_does_not_exist_stops_with_a_usage_error(tmp_path, run_fail, make_repo):
+    gone = tmp_path / 'gone'
+    out = run_fail('gather.py', '--root', gone, cwd=make_repo(tmp_path / 'b'))
+    assert out.splitlines()[0] == f'gather.py: --root folder does not exist: {gone}'

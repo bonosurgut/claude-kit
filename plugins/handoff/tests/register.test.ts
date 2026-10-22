@@ -115,6 +115,7 @@ function world(on: On, opts: WorldOpts = {}) {
     copies: [] as string[],
     logs: [] as string[],
     registered: [] as { name: string; description: string }[],
+    prompts: [] as string[], // сообщения, дошедшие до «дна» prompt.submit, то есть до Claude
     attached: [] as string[], // клиенты, чьё подключение дошло до «дна» цепочки session.attach (то есть мод вызвал next)
     effects: [] as string[],
     listed: 0,
@@ -147,6 +148,8 @@ function world(on: On, opts: WorldOpts = {}) {
   on('session.attach', (_$, e) => { w.attached.push(e.clientId); return { clientId: e.clientId } })
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
+  on('prompt.submit', (_$, e) => { w.prompts.push(e.text); return { text: e.text } })
+  on('skill.prompt', (_$, e) => ({ text: e.text }))
 
   on('session.id', async () => {
     if (startGate) await startGate
@@ -265,6 +268,11 @@ const turnDone = (turnId: string, agentId?: string, isAborted = false) => ({
 // Команда, набранная человеком: args, origin и presentation движок заполняет сам.
 const typed = ($: Engine, command: string) =>
   $.command.run({ command, args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+
+// Сообщение, отправленное в чат: по умолчанию человеком (`composer`) и когда Claude не отвечает (без turnId).
+// В типах `$.prompt.submit` origin и turnId нет (их ставит движок), но тестовый движок передаёт их хукам как есть.
+const said = ($: Engine, text: string, extra: { origin?: { kind: string; from?: string }; turnId?: string } = {}) =>
+  $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false, ...extra } as never) as Promise<{ text?: string; drop?: string }>
 
 // Старт сессии, контекст ровно на пороге по умолчанию (50%), ответ «Передать»: скилл запущен, мод ждёт файл.
 async function begin($: Engine, w: World) {
@@ -1918,4 +1926,133 @@ test('F-20: the app on a Mac without HOME → fallback with the reason at once, 
   expect(w.listed).toBe(0)
   expect(w.toasts).toEqual([FALLBACK('не найден HOME', ENDING.appMac)])
   expect(w.commands.filter(c => c.command === 'exit')).toEqual([])
+})
+
+// ---------- /handoff-now внутри короткой фразы ----------
+
+// Живой случай 2026-10-15: «ок /handoff-now» ушло в Claude обычным текстом (команда — только в начале сообщения),
+// и Claude сделал ручной хендофф без новой сессии. Теперь мод сам узнаёт такую фразу.
+test('F-16: «ок /handoff-now» starts the auto handoff like the command, and the phrase never reaches Claude', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  const r = await said($, 'ок /handoff-now')
+  await w.clock.settle()
+  expect(r).toEqual({ drop: 'Пишу хендофф; потом коммит и новая сессия' })
+  expect(w.skillRuns()).toEqual([{ command: 'handoff:handoff', args: `auto ${PATH}` }])
+  expect(w.prompts).toEqual([])
+})
+
+test('F-16: «давай handoff-now» without the slash starts it too', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  expect(await said($, 'давай handoff-now')).toEqual({ drop: 'Пишу хендофф; потом коммит и новая сессия' })
+  await w.clock.settle()
+  expect(w.skillRuns()).toHaveLength(1)
+})
+
+test('F-16: a message that only mentions /handoff-now reaches Claude unchanged and starts nothing', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  const text = 'почему /handoff-now не сработал'
+  expect(await said($, text)).toEqual({ text })
+  await w.clock.settle()
+  expect(w.prompts).toEqual([text])
+  expect(w.skillRuns()).toEqual([])
+})
+
+test('F-16: the phrase from another session (peer) is not intercepted', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  expect(await said($, 'ок /handoff-now', { origin: { kind: 'peer', from: 'other' } })).toEqual({ text: 'ок /handoff-now' })
+  await w.clock.settle()
+  expect(w.prompts).toEqual(['ок /handoff-now'])
+  expect(w.skillRuns()).toEqual([])
+})
+
+test('F-16: the phrase typed while Claude is answering is held back with a hint, and nothing starts', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.turn.start({ text: 'работа', turnId: 't7' })
+  const r = await said($, 'ок /handoff-now', { turnId: 't7' })
+  await w.clock.settle()
+  expect(r).toEqual({ drop: 'Claude ещё отвечает: дождись конца ответа и отправь /handoff-now снова' })
+  expect(w.prompts).toEqual([])
+  expect(w.skillRuns()).toEqual([])
+})
+
+test('F-16: the phrase while a handoff is pending says «Передача уже идёт: <path>» and starts no second one', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await typed($, 'handoff-now')
+  await w.clock.settle()
+  expect(await said($, 'ок /handoff-now')).toEqual({ drop: `Передача уже идёт: ${PATH}` })
+  await w.clock.settle()
+  expect(w.skillRuns()).toHaveLength(1)
+  expect(w.prompts).toEqual([])
+})
+
+// ---------- ручной хендофф — в папку, где началась сессия ----------
+
+// Живой случай 2026-10-15: сессия началась в «Мой проект», Claude перешёл (`cd`) во вложенный репозиторий, и ручной
+// хендофф лёг туда, а родитель цепочки лежал в папке старта. Мод дописывает в текст скилла папку старта сессии
+// (`$.session.root()`), скилл передаёт её gather.py как --root. Ожидаемая строка — договорённость со SKILL.md
+// (test_skill.py проверяет, что скилл ищет ту же метку).
+const SKILL_TEXT = 'Base directory for this skill: /x\n\n# Session Handoff\n'
+
+for (const skill of ['handoff:handoff', 'handoff']) {
+  test(`skill.prompt (${skill}): the session root is appended as one SESSION_ROOT line at the end`, async ($, on) => {
+    world(on, { cwd: '/r/sub/nested', root: '/Мой проект' })
+    await $.session.start(START)
+    const r = await $.skill.prompt({ skill, text: SKILL_TEXT } as never) as { text: string }
+    expect(r.text).toBe(`${SKILL_TEXT}\nSESSION_ROOT: /Мой проект\n`)
+  })
+}
+
+test('skill.prompt: other skills are left unchanged', async ($, on) => {
+  world(on, { root: '/Мой проект' })
+  await $.session.start(START)
+  const r = await $.skill.prompt({ skill: 'commit', text: SKILL_TEXT } as never) as { text: string }
+  expect(r.text).toBe(SKILL_TEXT)
+})
+
+test('skill.prompt: when the engine refuses session.root, the current folder is the root', async ($, on) => {
+  const w = world(on, { cwd: '/r/sub', root: '/Мой проект' })
+  await $.session.start(START)
+  w.rootFails = true
+  const r = await $.skill.prompt({ skill: 'handoff:handoff', text: SKILL_TEXT } as never) as { text: string }
+  expect(r.text).toBe(`${SKILL_TEXT}\nSESSION_ROOT: /r/sub\n`)
+})
+
+test('F-16: the phrase while Claude is writing the pending handoff says «Передача уже идёт», not «отправь снова»', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await typed($, 'handoff-now')
+  await w.clock.settle()
+  expect(await said($, 'ок /handoff-now', { turnId: 'w1' })).toEqual({ drop: `Передача уже идёт: ${PATH}` })
+  await w.clock.settle()
+  expect(w.skillRuns()).toHaveLength(1)
+})
+
+// Живая проверка 2026-10-16 (приложение): фразу, отправленную во время ответа, приложение держит в очереди и отдаёт
+// после конца хода, но с id того хода. Ход уже закончился — значит, передачу можно начинать сразу.
+test('F-16: the phrase queued during a turn and delivered after it ended starts the handoff', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.turn.start({ text: 'работа', turnId: 't7' })
+  await $.turn.complete(turnDone('t7'))
+  const r = await said($, 'ок /handoff-now', { turnId: 't7' })
+  await w.clock.settle()
+  expect(r).toEqual({ drop: 'Пишу хендофф; потом коммит и новая сессия' })
+  expect(w.skillRuns()).toEqual([{ command: 'handoff:handoff', args: `auto ${PATH}` }])
+})
+
+test('F-16: a subagent turn ending does not count as the main turn ending', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.turn.start({ text: 'работа', turnId: 't7' })
+  await $.turn.start({ text: '', turnId: 'a1' })
+  await $.turn.complete(turnDone('a1', 'agent-1'))
+  expect(await said($, 'ок /handoff-now', { turnId: 't7' })).toEqual({ drop: 'Claude ещё отвечает: дождись конца ответа и отправь /handoff-now снова' })
+  await w.clock.settle()
+  expect(w.skillRuns()).toEqual([])
 })
