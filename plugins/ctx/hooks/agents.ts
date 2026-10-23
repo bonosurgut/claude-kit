@@ -1,13 +1,14 @@
 import type { AgentInfo } from 'claude-code'
 import type { AgentStates } from '../types'
 import { SEPARATOR } from './line'
+import type { Words } from './words'
 
-// Строка субагентов в полосе над полем ввода (F-26): `работают N   готово M`, затем `   сбой K` только при K > 0.
-// Подпись строки агентов и подпись строки ctx выровнены по ширине самой длинной (`агенты`): с общей
-// колонкой полоса читается как таблица.
-const NAME = 'агенты'
-export const AGENTS_LABEL = NAME + SEPARATOR
-export const ALIGNED_CTX_LABEL = 'ctx'.padEnd(NAME.length) + SEPARATOR
+// Строка субагентов в полосе над полем ввода (F-26): `работают N  готово M`, затем `  сбой K` только при K > 0
+// (части разделены общим SEPARATOR из line.ts); слова и подпись строки — из словаря выбранного языка (F-27), по-английски
+// `running N  ready M  failed K`. Подпись строки агентов и подпись строки ctx выровнены по ширине подписи агентов выбранного
+// языка (`агенты` или `subagents`): с общей колонкой полоса читается как таблица. Ширина колонки поэтому зависит от языка.
+export const agentsLabel = (w: Words): string => w.agents + SEPARATOR
+export const alignedCtxLabel = (w: Words): string => 'ctx'.padEnd(w.agents.length) + SEPARATOR
 
 // Корзины считаются по словам движка (AgentStatus, движок 2.1.304): закончил успешно — `completed`;
 // закончил неуспешно — `failed` и `killed` (остановлен); всё остальное (`pending`, `running`, `waiting`, `idle`
@@ -89,13 +90,13 @@ export function retire(states: AgentStates): AgentStates {
 }
 
 // undefined, если считать некого (агентов нет или все помечены прежним разговором): строки агентов тогда нет вовсе.
-export function agentsRow(states: AgentStates): string | undefined {
+export function agentsRow(states: AgentStates, w: Words): string | undefined {
   const buckets = Object.values(states).map(bucketOf).filter(bucket => bucket !== 'previous')
   if (buckets.length === 0) return undefined
   const done = buckets.filter(bucket => bucket === 'done').length
   const failed = buckets.filter(bucket => bucket === 'failed').length
   const working = buckets.length - done - failed
-  const parts = [`работают ${working}`, `готово ${done}`]
-  if (failed > 0) parts.push(`сбой ${failed}`)
+  const parts = [`${w.working} ${working}`, `${w.done} ${done}`]
+  if (failed > 0) parts.push(`${w.failed} ${failed}`)
   return parts.join(SEPARATOR)
 }

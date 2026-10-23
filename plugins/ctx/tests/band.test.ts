@@ -9,14 +9,15 @@ import type { On, RenderSurface, SessionRateLimit, SessionUsage } from 'claude-c
 // В терминале всё по-старому: строка состояния под полем ввода, полоса пустая.
 // Подпись «ctx» в полосе ставит сам плагин: строку состояния подписывал движок (`ctx` в приложении,
 // `⚠ ctx:` в терминале), а у полосы подписи нет — без неё строку не узнать (живая проверка 2026-10-14).
-// Подпись отделена от строки тремя пробелами, как сегменты между собой.
-// Ожидаемые строки — те же, что в status.test.ts (спека F-03...F-06, шкалы посчитаны руками:
+// Подпись отделена от строки двумя пробелами, как сегменты между собой (спека ctx 0.3.0, «Разделитель» и
+// «Подписи полосы»: `ctx  …` без строки агентов).
+// Ожидаемые строки — те же, что в status.test.ts (спека F-03...F-06 и ctx 0.3.0, шкалы посчитаны руками:
 // делений round(процент / 100 * 8) из 8: 10% -> 1, 62% -> 5).
 
 const T0 = 1_000_000
 const MIN = 60_000
 const START = { cwd: '/work', surface: 'desktop', isInteractive: false } as const
-const LABEL = 'ctx   '
+const LABEL = 'ctx  '
 // Папка сессии в этом мире — пример из спеки: домашняя /Users/anna, сессия в /Users/anna/Desktop/CLAUDE/claude-kit
 // -> `CLAUDE/claude-kit`. Текущая папка (/work) от корня сессии нарочно отличается: имя берётся из корня.
 const ROOT = '/Users/anna/Desktop/CLAUDE/claude-kit'
@@ -78,14 +79,68 @@ async function bandText(band: { findAll: (q: { type: string }) => Promise<{ text
 
 // Изменено в 0.2.0 (F-25): раньше здесь ждали `[undefined]` — в приложении строку состояния прятали.
 // Теперь в ней стоит папка сессии, а шкалы в строку состояния не попадают.
-test('desktop: the line is drawn in the band above the prompt as one dim Text over what lies below, and the status line holds the folder, not the gauges', async ($, on) => {
+// Изменено в тикете 03 (F-29): `showCost: true` подан явно, потому что тест про вид строки в полосе вместе со стоимостью
+// (`$1.84`), а не про умолчание: до 0.3.0 стоимость рисовалась по умолчанию, теперь по умолчанию её нет (тест ниже).
+test('desktop: the line is drawn in the band above the prompt as one dim Text over what lies below, and the status line holds the folder, not the gauges', { options: { showCost: true } }, async ($, on) => {
   const w = world(on, ['desktop'])
   await $.session.measure(measureArg(62, [{ kind: 'five_hour', percentUsed: 14 }], 1.84))
   expect(w.shown).toEqual([FOLDER])
   const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
   const texts = await band.findAll({ type: 'Text' })
-  expect(texts.map(t => t.text)).toEqual([LABEL + '🔴 ▪▪▪▪▪▫▫▫ 62%   5ч ▪▫▫▫▫▫▫▫ 14%   $1.84', 'below'])
+  expect(texts.map(t => t.text)).toEqual([LABEL + '🔴 ▪▪▪▪▪▫▫▫ 62%  5ч ▪▫▫▫▫▫▫▫ 14%  $1.84', 'below'])
   expect(texts[0]!.props.dimColor).toBe(true)
+})
+
+// Тест умолчания для полосы (F-29, тикет 03; спека ctx 0.3.0, «Стоимость»: «по умолчанию не показывается»): тот же замер,
+// что в тесте выше, без опций, и движок сумму дал (usd 1.84), но в полосе `$` нет. Полоса сравнивается целиком; строка
+// состояния — папка, как всегда в приложении. Ожидание — из спеки, а не из вывода плагина.
+test('desktop: cost is off by default, the sum given by the engine is not in the band', async ($, on) => {
+  const w = world(on, ['desktop'])
+  await $.session.measure(measureArg(62, [{ kind: 'five_hour', percentUsed: 14 }], 1.84))
+  expect(w.shown).toEqual([FOLDER])
+  const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(await bandText(band)).toBe(LABEL + '🔴 ▪▪▪▪▪▫▫▫ 62%  5ч ▪▫▫▫▫▫▫▫ 14%' + BELOW)
+})
+
+// Включена, но движок суммы не дал: `$` в полосе нет (спека ctx 0.3.0, «Testing Decisions», пункт F-29: «включена, но движок
+// суммы не дал → её нет»).
+test('desktop: with showCost on but no sum from the engine, the band has no dollar part', { options: { showCost: true } }, async ($, on) => {
+  const w = world(on, ['desktop'])
+  await $.session.measure(measureArg(62, [{ kind: 'five_hour', percentUsed: 14 }]))
+  expect(w.shown).toEqual([FOLDER])
+  const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(await bandText(band)).toBe(LABEL + '🔴 ▪▪▪▪▪▫▫▫ 62%  5ч ▪▫▫▫▫▫▫▫ 14%' + BELOW)
+})
+
+// F-28 (спека ctx 0.3.0, история 24): строка состояния в терминале и строка в полосе приложения — одна и та же строка
+// из одного замера, полоса лишь с подписью. Строка — из спеки дословно (русский вариант). Терминал и приложение
+// подключены вместе, чтобы обе строки были нарисованы из одного состояния, а не из двух разных тестов.
+test('the terminal status line and the app band show the same dense line from one measure; the band only adds the label', async ($, on) => {
+  const w = world(on, ['terminal', 'desktop'])
+  await $.session.measure(measureArg(49, [
+    { kind: 'five_hour', percentUsed: 71, resetsAt: new Date(T0 + 133 * MIN + 1000).toISOString() },
+    // 2026-10-18 is a Sunday, local 10:00
+    { kind: 'seven_day', percentUsed: 61, resetsAt: new Date(2026, 9, 18, 10, 0).toISOString() },
+  ]))
+  await $.turn.complete(turnArg)
+  const line = '▪▪▪▪▫▫▫▫ 49%  5ч ▪▪▪▪▪▪▫▫ 71% ↻2ч14м  нед ▪▪▪▪▪▫▫▫ 61% ↻вс 10:00  кэш 0м'
+  expect(w.last()).toBe(line)
+  const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(await bandText(band)).toBe(LABEL + line + BELOW)
+})
+
+test('desktop: the remaining time of the 5h window in the band falls on the minute tick, with no new measure', async ($, on) => {
+  const w = world(on, ['desktop'], usageOf({
+    context: { window: 200_000, percent: 10 },
+    rateLimits: [{ kind: 'five_hour', percentUsed: 71, resetsAt: new Date(T0 + 133 * MIN + 1000).toISOString() }],
+  }))
+  await $.session.start(START)
+  const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%  5ч ▪▪▪▪▪▪▫▫ 71% ↻2ч14м' + BELOW)
+  await w.clock.advance(MIN)
+  expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%  5ч ▪▪▪▪▪▪▫▫ 71% ↻2ч13м' + BELOW)
+  await w.clock.advance(MIN)
+  expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%  5ч ▪▪▪▪▪▪▫▫ 71% ↻2ч12м' + BELOW)
 })
 
 test('terminal: the status line is drawn as before and the band shows nothing of ctx', async ($, on) => {
@@ -136,11 +191,11 @@ test('desktop: the band follows the cache timer minute by minute and goes cold a
   const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
   expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%' + BELOW)
   await $.turn.complete(turnArg)
-  expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%   кэш ◷ 0м' + BELOW)
+  expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%  кэш 0м' + BELOW)
   await w.clock.advance(MIN)
-  expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%   кэш ◷ 1м' + BELOW)
+  expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%  кэш 1м' + BELOW)
   await w.clock.advance(4 * MIN)
-  expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%   кэш остыл' + BELOW)
+  expect(await bandText(band)).toBe(LABEL + '▪▫▫▫▫▫▫▫ 10%  кэш остыл' + BELOW)
   // Изменено в 0.2.0 (F-25): каждая перерисовка раньше гасила строку состояния, теперь ставит в неё папку.
   // Перерисовок восемь, посчитано по входу: start (1), конец хода (1), минутные тики через 1, 2, 3, 4 и 5 минут
   // после конца хода (5) и момент остывания кэша через 5 минут (1); ни одна не оставила в строке ничего, кроме папки.
@@ -173,3 +228,65 @@ for (const reason of ['clear', 'resume'] as const) {
     expect(await bandText(band)).toBe('below')
   })
 }
+
+// --- F-27: язык строк (спека ctx 0.3.0, тикет 02) ---
+//
+// Тот же мир, что выше, с опцией `lang = en`. Строка — из спеки дословно (английский вид); без строки агентов подпись
+// полосы — `ctx  ` на обоих языках. Подписи при строке агентов (`subagents  `, `ctx        `) проверяет agents.test.ts.
+
+const EN = { options: { lang: 'en' } }
+
+test('lang en: the terminal status line and the app band show the same English line from one measure; the band only adds `ctx  `', EN, async ($, on) => {
+  const w = world(on, ['terminal', 'desktop'])
+  await $.session.measure(measureArg(49, [
+    { kind: 'five_hour', percentUsed: 71, resetsAt: new Date(T0 + 133 * MIN + 1000).toISOString() },
+    // 2026-10-18 is a Sunday, local 10:00
+    { kind: 'seven_day', percentUsed: 61, resetsAt: new Date(2026, 9, 18, 10, 0).toISOString() },
+  ]))
+  await $.turn.complete(turnArg)
+  const line = '▪▪▪▪▫▫▫▫ 49%  5h ▪▪▪▪▪▪▫▫ 71% ↻2h14m  wk ▪▪▪▪▪▫▫▫ 61% ↻Sun 10:00  cache 0m'
+  expect(w.last()).toBe(line)
+  const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(await bandText(band)).toBe(LABEL + line + BELOW)
+})
+
+test('lang en: the band follows the cache timer and goes to `cache cold` at 5 min; the 🔴 mark and `$` stand as in Russian', { options: { lang: 'en', showCost: true } }, async ($, on) => {
+  const w = world(on, ['desktop'], usageOf({ context: { window: 200_000, percent: 62 }, cost: { usd: 1.84 } }))
+  await $.session.start(START)
+  const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  await $.turn.complete(turnArg)
+  expect(await bandText(band)).toBe(LABEL + '🔴 ▪▪▪▪▪▫▫▫ 62%  cache 0m  $1.84' + BELOW)
+  await w.clock.advance(MIN)
+  expect(await bandText(band)).toBe(LABEL + '🔴 ▪▪▪▪▪▫▫▫ 62%  cache 1m  $1.84' + BELOW)
+  await w.clock.advance(4 * MIN)
+  expect(await bandText(band)).toBe(LABEL + '🔴 ▪▪▪▪▪▫▫▫ 62%  cache cold  $1.84' + BELOW)
+})
+
+test('lang en: the terminal draws the English status line and the band shows nothing of ctx', EN, async ($, on) => {
+  const w = world(on, ['terminal'])
+  await $.session.measure(measureArg(62, [{ kind: 'five_hour', percentUsed: 14 }]))
+  expect(w.last()).toBe('🔴 ▪▪▪▪▪▫▫▫ 62%  5h ▪▫▫▫▫▫▫▫ 14%')
+  const band = await $.ui.mount({ plugin: 'ctx', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+  expect(await bandText(band)).toBe('below')
+})
+
+// История 11: имя папки в нижнем ряду приложения не меняется от языка (в нём нет слов, только путь). Тот же замер на обоих языках.
+for (const lang of ['ru', 'en'] as const) {
+  test(`lang ${lang}: in the app the status line holds the same folder, not words`, { options: { lang } }, async ($, on) => {
+    const w = world(on, ['desktop'])
+    await $.session.measure(measureArg(62, [{ kind: 'five_hour', percentUsed: 14 }]))
+    await $.turn.complete(turnArg)
+    expect(w.shown).toEqual([FOLDER, FOLDER])
+  })
+}
+
+test('lang en: nothing known draws no band, and a cleared session empties it, as in Russian', EN, async ($, on) => {
+  world(on, ['desktop'])
+  await $.session.measure(measureArg(undefined))
+  const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  expect(await bandText(band)).toBe('below')
+  await $.session.measure(measureArg(62))
+  expect(await bandText(band)).toBe(LABEL + '🔴 ▪▪▪▪▪▫▫▫ 62%' + BELOW)
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+  expect(await bandText(band)).toBe('below')
+})

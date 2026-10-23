@@ -7,10 +7,17 @@ import type { AgentInfo, AgentStatus, On, RenderSurface, SessionUsage } from 'cl
 //
 // Откуда ожидаемые строки (независимо от кода плагина):
 //  - спека ctx 0.2.0 (.scratch/ctx-folder-agents/spec.md), «Implementation Decisions» -> «Полоса» и «Учёт
-//    агентов», истории 15-25 и 31-33: формат `работают N   готово M` и `   сбой K` только при K > 0; подписи
-//    `агенты   …` и `ctx      …` (выровнены по ширине `агенты`, плюс три пробела), без строки агентов подпись
-//    ctx прежняя `ctx   `; корзины: `completed` -> готово, `failed` и `killed` -> сбой, всё остальное (в том числе
+//    агентов», истории 15-25 и 31-33: слова строки `работают N … готово M` и `сбой K` только при K > 0; корзины:
+//    `completed` -> готово, `failed` и `killed` -> сбой, всё остальное (в том числе
 //    слова, которых плагин не знает) -> работают; вложенные считаются, участники команды (teammateId) нет;
+//  - разделитель и подписи — спека ctx 0.3.0 (.scratch/ctx-lang-compact/spec.md), «Разделитель» и «Подписи полосы»,
+//    истории 14-15 (она заменила три пробела 0.2.0 на два): `работают N  готово M` и `  сбой K`; подписи
+//    `агенты  …` и `ctx     …` (`ctx` + пять пробелов: ширина `агенты` плюс разделитель), без строки агентов
+//    подпись `ctx  `;
+//  - английский вид (F-27, спека ctx 0.3.0, «Словарь» и «Подписи полосы», тикет 02, история 4): `subagents  running N  ready M
+//    failed K` (`  failed K` только при K > 0), подписи `subagents  …` и `ctx        …` (`ctx` + восемь пробелов: ширина
+//    `subagents`, девять знаков, плюс разделитель), без строки агентов `ctx  `; отладочный журнал остаётся русским (спека,
+//    «Что язык не меняет»), его точной фразы в спеке нет: её сверит ревью, тест лишь фиксирует начало;
 //  - слова состояния — AgentStatus из типов движка 2.1.304 (pending, running, waiting, idle, completed, failed, killed);
 //  - числа в ожидаемых строках посчитаны руками по списку, поданному на вход теста.
 // Решения задачи, которых в спеке нет, названы в тестах отдельно: имя начинается с `decision of the task`.
@@ -31,9 +38,9 @@ const MIN = 60_000
 const START = { cwd: '/work', surface: 'desktop', isInteractive: false } as const
 const CTX = '▪▫▫▫▫▫▫▫ 10%' // процент 10 -> round(10 / 100 * 8) = 1 деление из 8
 const BAND = { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 93, scroll: { offset: 0, bodyRows: 1 }, view: {} }
-const AGENTS = 'агенты   '
-const CTX_ALIGNED = 'ctx      '
-const CTX_ALONE = 'ctx   '
+const AGENTS = 'агенты  '
+const CTX_ALIGNED = 'ctx     '
+const CTX_ALONE = 'ctx  '
 
 const agent = (id: string, status: string, over: Partial<AgentInfo> = {}): AgentInfo => ({
   id,
@@ -125,7 +132,7 @@ type World = ReturnType<typeof world>
 type Dollar = Parameters<Parameters<typeof test>[1]>[0]
 
 // Перечитать список: конец хода субагента. Ход главной сессии для этого не годится в тестах подсчёта: он добавляет
-// в строку ctx сегмент кэша (`кэш ◷ 0м`), а здесь проверяется строка агентов, и строка ctx должна оставаться `CTX`.
+// в строку ctx сегмент кэша (`кэш 0м`), а здесь проверяется строка агентов, и строка ctx должна оставаться `CTX`.
 const reread = ($: Dollar) => $.turn.complete(turnComplete('sub'))
 
 // Мир с данными ctx (процент 10) и смонтированной полосой приложения.
@@ -136,7 +143,7 @@ async function desktopBand($: Dollar, w: World) {
 
 // --- Подсчёт: корзины по словам движка ---
 
-test('no agents: there is no agent row and the ctx label stays the old `ctx   `', async ($, on) => {
+test('no agents: there is no agent row and the ctx label stays `ctx  `', async ($, on) => {
   const w = world(on)
   const band = await desktopBand($, w)
   // список прочитан и пуст: строки нет не потому, что его не спрашивали
@@ -145,22 +152,22 @@ test('no agents: there is no agent row and the ctx label stays the old `ctx   `'
   expect(await lines(band)).toEqual([CTX_ALONE + CTX, 'below'])
 })
 
-test('one agent is working: `работают 1   готово 0` over the ctx line, labels in one column', async ($, on) => {
+test('one agent is working: `работают 1  готово 0` over the ctx line, labels in one column', async ($, on) => {
   const w = world(on)
   w.roster.now = [agent('a1', 'running')]
   const band = await desktopBand($, w)
   await reread($)
-  expect(await lines(band)).toEqual([AGENTS + 'работают 1   готово 0', CTX_ALIGNED + CTX, 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 1  готово 0', CTX_ALIGNED + CTX, 'below'])
 })
 
-test('the same agent finishes: `работают 0   готово 1`', async ($, on) => {
+test('the same agent finishes: `работают 0  готово 1`', async ($, on) => {
   const w = world(on)
   w.roster.now = [agent('a1', 'running')]
   const band = await desktopBand($, w)
   await reread($)
   w.roster.now = [agent('a1', 'completed')]
   await $.turn.complete(turnComplete('a1'))
-  expect(await lines(band)).toEqual([AGENTS + 'работают 0   готово 1', CTX_ALIGNED + CTX, 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 0  готово 1', CTX_ALIGNED + CTX, 'below'])
 })
 
 test('labels are one width: the agent row and the ctx row start their text in the same column', async ($, on) => {
@@ -169,9 +176,9 @@ test('labels are one width: the agent row and the ctx row start their text in th
   const band = await desktopBand($, w)
   await reread($)
   const [agentsLine, ctxLine] = await lines(band)
-  // спека: подпись ctx выровнена по ширине `агенты` (6 знаков) плюс разделитель в три пробела = 9
-  expect(agentsLine!.indexOf('работают')).toBe(9)
-  expect(ctxLine!.indexOf('▪')).toBe(9)
+  // спека 0.3.0: подпись ctx выровнена по ширине `агенты` (6 знаков) плюс разделитель в два пробела = 8
+  expect(agentsLine!.indexOf('работают')).toBe(8)
+  expect(ctxLine!.indexOf('▪')).toBe(8)
 })
 
 // Спека, «Полоса»: «Обе строки — тем же приглушённым моноширинным текстом». Приглушённость — свойство dimColor узла Text.
@@ -184,7 +191,7 @@ test('both rows are dim text: the agent row and the ctx row aligned under it', a
   await reread($)
   const texts = await band.findAll({ type: 'Text' })
   // три строки: агентов, ctx и то, что ниже нашего мода (оно не наше и приглушённым не обязано быть)
-  expect(texts.map(t => t.text)).toEqual([AGENTS + 'работают 1   готово 0', CTX_ALIGNED + CTX, 'below'])
+  expect(texts.map(t => t.text)).toEqual([AGENTS + 'работают 1  готово 0', CTX_ALIGNED + CTX, 'below'])
   expect(texts[0]!.props.dimColor).toBe(true)
   expect(texts[1]!.props.dimColor).toBe(true)
 })
@@ -196,20 +203,20 @@ test('the agent row drawn alone (no ctx data) is dim text too', async ($, on) =>
   const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
   await reread($)
   const texts = await band.findAll({ type: 'Text' })
-  expect(texts.map(t => t.text)).toEqual([AGENTS + 'работают 1   готово 0', 'below'])
+  expect(texts.map(t => t.text)).toEqual([AGENTS + 'работают 1  готово 0', 'below'])
   expect(texts[0]!.props.dimColor).toBe(true)
 })
 
 // Все слова AgentStatus движка плюс одно слово, которого плагин не знает (спека: незнакомое слово -> «работают»).
 const BUCKETS: [string, string][] = [
-  ['pending', 'работают 1   готово 0'],
-  ['running', 'работают 1   готово 0'],
-  ['waiting', 'работают 1   готово 0'],
-  ['idle', 'работают 1   готово 0'],
-  ['completed', 'работают 0   готово 1'],
-  ['failed', 'работают 0   готово 0   сбой 1'],
-  ['killed', 'работают 0   готово 0   сбой 1'],
-  ['hibernating', 'работают 1   готово 0'],
+  ['pending', 'работают 1  готово 0'],
+  ['running', 'работают 1  готово 0'],
+  ['waiting', 'работают 1  готово 0'],
+  ['idle', 'работают 1  готово 0'],
+  ['completed', 'работают 0  готово 1'],
+  ['failed', 'работают 0  готово 0  сбой 1'],
+  ['killed', 'работают 0  готово 0  сбой 1'],
+  ['hibernating', 'работают 1  готово 0'],
 ]
 for (const [status, expected] of BUCKETS) {
   test(`status table: one agent "${status}" -> ${expected}`, async ($, on) => {
@@ -226,7 +233,7 @@ test('failed and killed are `сбой 2` and are not in `готово`', async (
   w.roster.now = [agent('a1', 'failed'), agent('a2', 'killed')]
   const band = await desktopBand($, w)
   await reread($)
-  expect(await lines(band)).toEqual([AGENTS + 'работают 0   готово 0   сбой 2', CTX_ALIGNED + CTX, 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 0  готово 0  сбой 2', CTX_ALIGNED + CTX, 'below'])
 })
 
 test('`сбой` stands after `готово` and counts only the failed: one completed, one failed', async ($, on) => {
@@ -234,7 +241,7 @@ test('`сбой` stands after `готово` and counts only the failed: one com
   w.roster.now = [agent('a1', 'completed'), agent('a2', 'failed')]
   const band = await desktopBand($, w)
   await reread($)
-  expect(await lines(band)).toEqual([AGENTS + 'работают 0   готово 1   сбой 1', CTX_ALIGNED + CTX, 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 0  готово 1  сбой 1', CTX_ALIGNED + CTX, 'below'])
 })
 
 test('three agents in the list: the three counters add up to exactly three', async ($, on) => {
@@ -243,7 +250,7 @@ test('three agents in the list: the three counters add up to exactly three', asy
   const band = await desktopBand($, w)
   await reread($)
   const row = (await lines(band))[0]!
-  expect(row).toBe(AGENTS + 'работают 1   готово 1   сбой 1')
+  expect(row).toBe(AGENTS + 'работают 1  готово 1  сбой 1')
   const total = [...row.matchAll(/\d+/g)].reduce((sum, m) => sum + Number(m[0]), 0)
   expect(total).toBe(w.roster.now.length)
 })
@@ -271,7 +278,7 @@ test('a mixed list of ten: the counters add up to the non-teammate agents of the
   await reread($)
   const row = (await lines(band))[0]!
   // работают: a1..a5 = 5; готово: a6, a7, a10 = 3; сбой: a8, a9 = 2
-  expect(row).toBe(AGENTS + 'работают 5   готово 3   сбой 2')
+  expect(row).toBe(AGENTS + 'работают 5  готово 3  сбой 2')
   const total = [...row.matchAll(/\d+/g)].reduce((sum, m) => sum + Number(m[0]), 0)
   expect(total).toBe(subagents)
 })
@@ -285,7 +292,7 @@ test('a nested agent (spawned by another agent) is counted, at any depth', async
   ]
   const band = await desktopBand($, w)
   await reread($)
-  expect(await lines(band)).toEqual([AGENTS + 'работают 1   готово 1   сбой 1', CTX_ALIGNED + CTX, 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 1  готово 1  сбой 1', CTX_ALIGNED + CTX, 'below'])
 })
 
 test('a teammate is not counted: with a subagent beside it', async ($, on) => {
@@ -293,10 +300,10 @@ test('a teammate is not counted: with a subagent beside it', async ($, on) => {
   w.roster.now = [teammate('t1', 'running'), teammate('t2', 'failed'), agent('a1', 'completed')]
   const band = await desktopBand($, w)
   await reread($)
-  expect(await lines(band)).toEqual([AGENTS + 'работают 0   готово 1', CTX_ALIGNED + CTX, 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 0  готово 1', CTX_ALIGNED + CTX, 'below'])
 })
 
-test('only teammates in the list: there is no agent row and the ctx label stays `ctx   `', async ($, on) => {
+test('only teammates in the list: there is no agent row and the ctx label stays `ctx  `', async ($, on) => {
   const w = world(on)
   w.roster.now = [teammate('t1', 'running'), teammate('t2', 'idle')]
   const band = await desktopBand($, w)
@@ -313,7 +320,7 @@ test('no ctx data (no percent) but agents present: the agent row is drawn alone'
   await $.session.measure(measureArg(undefined))
   const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
   await reread($)
-  expect(await lines(band)).toEqual([AGENTS + 'работают 1   готово 0', 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 1  готово 0', 'below'])
 })
 
 test('the app survey wins: no agent row, and it is back when the survey is gone', async ($, on) => {
@@ -324,7 +331,7 @@ test('the app survey wins: no agent row, and it is back when the survey is gone'
   await reread($)
   expect(await lines(band)).toEqual(['survey'])
   await band.redraw(BAND)
-  expect(await lines(band)).toEqual([AGENTS + 'работают 1   готово 0', CTX_ALIGNED + CTX, 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 1  готово 0', CTX_ALIGNED + CTX, 'below'])
 })
 
 test('terminal: no agent row in the band, and the status line stays the ctx line', async ($, on) => {
@@ -358,7 +365,7 @@ for (const [name, fire] of POINTS) {
     expect(await lines(band)).toEqual([CTX_ALONE + CTX, 'below'])
     await fire($, w)
     expect(w.roster.reads).toBe(1)
-    expect((await lines(band))[0]).toBe(AGENTS + 'работают 1   готово 0')
+    expect((await lines(band))[0]).toBe(AGENTS + 'работают 1  готово 0')
   })
 }
 
@@ -382,7 +389,7 @@ test('decision of the task: spawn is read after it went through: an agent that a
   }
   const result = await $.agent.spawn({ prompt: 'x' })
   expect(result).toEqual({ agentId: 'a-new', model: 'm' })
-  expect((await lines(band))[0]).toBe(AGENTS + 'работают 1   готово 0')
+  expect((await lines(band))[0]).toBe(AGENTS + 'работают 1  готово 0')
 })
 
 test('decision of the task: the end of a turn is read after it went through: an agent finishing during it is counted as done', async ($, on) => {
@@ -390,12 +397,12 @@ test('decision of the task: the end of a turn is read after it went through: an 
   w.roster.now = [agent('a1', 'running')]
   const band = await desktopBand($, w)
   await reread($)
-  expect((await lines(band))[0]).toBe(AGENTS + 'работают 1   готово 0')
+  expect((await lines(band))[0]).toBe(AGENTS + 'работают 1  готово 0')
   w.roster.during = () => {
     w.roster.now = [agent('a1', 'completed')]
   }
   expect(await $.turn.complete(turnComplete('a1'))).toEqual({ text: 'ok' })
-  expect((await lines(band))[0]).toBe(AGENTS + 'работают 0   готово 1')
+  expect((await lines(band))[0]).toBe(AGENTS + 'работают 0  готово 1')
 })
 
 test('a re-read draws only the band: the status line is not written again', async ($, on) => {
@@ -406,7 +413,7 @@ test('a re-read draws only the band: the status line is not written again', asyn
   await $.agent.spawn({ prompt: 'x' })
   await $.turn.start(turnStart('a1'))
   await $.turn.complete(turnComplete('a1'))
-  expect((await lines(band))[0]).toBe(AGENTS + 'работают 1   готово 0')
+  expect((await lines(band))[0]).toBe(AGENTS + 'работают 1  готово 0')
   // turn.complete субагента строку состояния не перерисовывает (кэш считается по главной сессии)
   expect(w.shown.length).toBe(before)
 })
@@ -426,7 +433,7 @@ test('a refused list read does not break the chain and leaves the last numbers o
   w.roster.now = [agent('a1', 'running'), agent('a2', 'completed')]
   const band = await desktopBand($, w)
   await reread($)
-  expect((await lines(band))[0]).toBe(AGENTS + 'работают 1   готово 1')
+  expect((await lines(band))[0]).toBe(AGENTS + 'работают 1  готово 1')
   w.roster.refuse = true
   w.roster.now = [agent('a1', 'completed'), agent('a2', 'completed'), agent('a3', 'failed')] // не должно быть прочитано
   expect(await $.agent.spawn({ prompt: 'x' })).toEqual({ agentId: 'a-new', model: 'm' })
@@ -440,11 +447,11 @@ test('a refused list read does not break the chain and leaves the last numbers o
   expect(w.logs.length).toBe(5)
   expect(w.logs.every(entry => entry.startsWith('debug: '))).toBe(true)
   // цифры прежние; сегмент кэша в строке ctx — от конца хода главной сессии минуту назад (как в band.test.ts)
-  expect(await lines(band)).toEqual([AGENTS + 'работают 1   готово 1', CTX_ALIGNED + CTX + '   кэш ◷ 1м', 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 1  готово 1', CTX_ALIGNED + CTX + '  кэш 1м', 'below'])
   // и когда движок снова отвечает, учёт обновляется: отказ не заклинил полосу
   w.roster.refuse = false
   await $.turn.complete(turnComplete('a1'))
-  expect((await lines(band))[0]).toBe(AGENTS + 'работают 0   готово 2   сбой 1')
+  expect((await lines(band))[0]).toBe(AGENTS + 'работают 0  готово 2  сбой 1')
 })
 
 // --- Память учёта (тикет 03, F-26) ---
@@ -453,9 +460,9 @@ test('a refused list read does not break the chain and leaves the last numbers o
 // и из входа теста (списка, который подаёт заглушка), а не списаны с вывода плагина. Заглушён только `agent.list` (по
 // чтению: тест сам убирает агента из списка между чтениями) и события; слияние учёта идёт в самом плагине.
 
-const WORK = 'работают 1   готово 0'
-const DONE_ONE = 'работают 0   готово 1'
-const FAIL_ONE = 'работают 0   готово 0   сбой 1'
+const WORK = 'работают 1  готово 0'
+const DONE_ONE = 'работают 0  готово 1'
+const FAIL_ONE = 'работают 0  готово 0  сбой 1'
 
 const sumOf = (row: string) => [...row.matchAll(/\d+/g)].reduce((sum, m) => sum + Number(m[0]), 0)
 const rowOf = async (band: Parameters<typeof lines>[0]) => (await lines(band))[0]!
@@ -520,7 +527,7 @@ test('a vanished agent is neither forgotten nor doubled when the list is read ag
   w.roster.now = []
   for (let i = 0; i < 4; i += 1) await reread($)
   expect(w.roster.reads).toBe(5)
-  expect(await lines(band)).toEqual([AGENTS + 'работают 0   готово 1   сбой 1', CTX_ALIGNED + CTX, 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 0  готово 1  сбой 1', CTX_ALIGNED + CTX, 'below'])
 })
 
 // Сценарий из спеки по шагам: на каждом шаге список, который отдаёт движок, и строка, которую видит человек.
@@ -530,17 +537,17 @@ test('scripted sequence: spawn A, spawn B, A done, A vanishes, B fails, B vanish
   const w = world(on)
   const band = await desktopBand($, w)
   const steps: [string, AgentInfo[], string][] = [
-    ['spawn A', [agent('A', 'running')], 'работают 1   готово 0'],
-    ['spawn B', [agent('A', 'running'), agent('B', 'running')], 'работают 2   готово 0'],
-    ['A completes', [agent('A', 'completed'), agent('B', 'running')], 'работают 1   готово 1'],
-    ['A vanishes from the list', [agent('B', 'running')], 'работают 1   готово 1'],
-    ['B fails', [agent('B', 'failed')], 'работают 0   готово 1   сбой 1'],
-    ['B vanishes from the list', [], 'работают 0   готово 1   сбой 1'],
-    ['A is written to and runs again', [agent('A', 'running')], 'работают 1   готово 0   сбой 1'],
-    ['C joins, a teammate is beside them', [agent('A', 'running'), agent('C', 'running'), teammate('T', 'running')], 'работают 2   готово 0   сбой 1'],
-    ['A and C vanish while working, the teammate too', [], 'работают 0   готово 2   сбой 1'],
-    ['B is written to and runs again', [agent('B', 'running')], 'работают 1   готово 2'],
-    ['B vanishes while working', [], 'работают 0   готово 3'],
+    ['spawn A', [agent('A', 'running')], 'работают 1  готово 0'],
+    ['spawn B', [agent('A', 'running'), agent('B', 'running')], 'работают 2  готово 0'],
+    ['A completes', [agent('A', 'completed'), agent('B', 'running')], 'работают 1  готово 1'],
+    ['A vanishes from the list', [agent('B', 'running')], 'работают 1  готово 1'],
+    ['B fails', [agent('B', 'failed')], 'работают 0  готово 1  сбой 1'],
+    ['B vanishes from the list', [], 'работают 0  готово 1  сбой 1'],
+    ['A is written to and runs again', [agent('A', 'running')], 'работают 1  готово 0  сбой 1'],
+    ['C joins, a teammate is beside them', [agent('A', 'running'), agent('C', 'running'), teammate('T', 'running')], 'работают 2  готово 0  сбой 1'],
+    ['A and C vanish while working, the teammate too', [], 'работают 0  готово 2  сбой 1'],
+    ['B is written to and runs again', [agent('B', 'running')], 'работают 1  готово 2'],
+    ['B vanishes while working', [], 'работают 0  готово 3'],
   ]
   const seen = new Set<string>()
   for (const [label, list, expected] of steps) {
@@ -622,7 +629,7 @@ test('two re-reads in flight at once do not overwrite each other: both agents st
   // конец хода субагента и начало хода другого субагента: два разных повода перечитать
   await Promise.all([$.turn.complete(turnComplete('x')), $.turn.start(turnStart('y'))])
   expect(w.roster.reads).toBe(2)
-  expect(await lines(band)).toEqual([AGENTS + 'работают 0   готово 1   сбой 1', CTX_ALIGNED + CTX, 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 0  готово 1  сбой 1', CTX_ALIGNED + CTX, 'below'])
 })
 
 // --- Ответы приходят не в том порядке, в каком чтения начались ---
@@ -671,7 +678,7 @@ test('decision of the task: out of order: an earlier read written later does not
   // отставшее чтение не заклинило учёт: следующее чтение (начатое позже всех) принимается
   w.roster.now = [agent('A', 'failed'), agent('B', 'running')]
   await reread($)
-  expect(await rowOf(band)).toBe(AGENTS + 'работают 1   готово 0   сбой 1')
+  expect(await rowOf(band)).toBe(AGENTS + 'работают 1  готово 0  сбой 1')
 })
 
 test('decision of the task: out of order: an earlier read that does not list an agent does not finish it for a later read that did', async ($, on) => {
@@ -715,7 +722,7 @@ test('decision of the task: out of order: three reads written as 3, 1, 2 leave w
     await w.clock.settle()
   }
   expect(w.roster.reads).toBe(3)
-  const final = AGENTS + 'работают 0   готово 1   сбой 1'
+  const final = AGENTS + 'работают 0  готово 1  сбой 1'
   gates.open(3)
   await reads[2]
   expect(await rowOf(band)).toBe(final)
@@ -749,7 +756,7 @@ test('decision of the task: out of order: an agent only the earlier read saw is 
   gates.open(1)
   await first
   // и A, и B: 2 агента на входе (по одному в списке каждого чтения), готово 1 (A) и сбой 1 (B)
-  expect(await rowOf(band)).toBe(AGENTS + 'работают 0   готово 1   сбой 1')
+  expect(await rowOf(band)).toBe(AGENTS + 'работают 0  готово 1  сбой 1')
 })
 
 // Догадка не перекрывает наблюдение. «Пропал из списка» — вывод плагина, а не то, что чтение видело: чтение 3 с пустым
@@ -799,7 +806,7 @@ test('a refused read does not finish the working agents of the tally and does no
   w.roster.now = [agent('A', 'running'), agent('B', 'failed'), agent('C', 'completed')]
   const band = await desktopBand($, w)
   await reread($)
-  expect(await rowOf(band)).toBe(AGENTS + 'работают 1   готово 1   сбой 1')
+  expect(await rowOf(band)).toBe(AGENTS + 'работают 1  готово 1  сбой 1')
   // движок отказывает, а настоящий список уже пуст: пока он не прочитан, A остаётся «работает»
   w.roster.refuse = true
   w.roster.now = []
@@ -809,10 +816,10 @@ test('a refused read does not finish the working agents of the tally and does no
   await $.turn.complete(turnComplete())
   await w.clock.advance(MIN)
   expect(w.roster.reads).toBe(6)
-  expect(await lines(band)).toEqual([AGENTS + 'работают 1   готово 1   сбой 1', CTX_ALIGNED + CTX + '   кэш ◷ 1м', 'below'])
+  expect(await lines(band)).toEqual([AGENTS + 'работают 1  готово 1  сбой 1', CTX_ALIGNED + CTX + '  кэш 1м', 'below'])
   w.roster.refuse = false
   await reread($)
-  expect(await rowOf(band)).toBe(AGENTS + 'работают 0   готово 2   сбой 1')
+  expect(await rowOf(band)).toBe(AGENTS + 'работают 0  готово 2  сбой 1')
 })
 
 test('the very first read refused: no agent row, the ctx row keeps its old label, nothing is thrown', async ($, on) => {
@@ -834,7 +841,7 @@ test('the very first read refused: no agent row, the ctx row keeps its old label
 // начинается с нуля, потому что это новый разговор; агент нового разговора считается как обычно.
 
 const BEFORE_CLEAR = () => [agent('A', 'running'), agent('B', 'failed'), agent('C', 'completed')]
-const BEFORE_CLEAR_ROW = AGENTS + 'работают 1   готово 1   сбой 1'
+const BEFORE_CLEAR_ROW = AGENTS + 'работают 1  готово 1  сбой 1'
 const END = (reason: 'clear' | 'resume', n = 1) => ({ reason, sessionId: `s${n}`, resume: { id: `s${n}` } })
 
 for (const reason of ['clear', 'resume'] as const) {
@@ -854,15 +861,15 @@ for (const reason of ['clear', 'resume'] as const) {
     expect(await lines(band)).toEqual([CTX_ALONE + CTX, 'below'])
     // конец хода главной сессии и минутный тик читают список снова, и опять строки агентов нет
     await $.turn.complete(turnComplete())
-    expect(await lines(band)).toEqual([CTX_ALONE + CTX + '   кэш ◷ 0м', 'below'])
+    expect(await lines(band)).toEqual([CTX_ALONE + CTX + '  кэш 0м', 'below'])
     await w.clock.advance(MIN)
-    expect(await lines(band)).toEqual([CTX_ALONE + CTX + '   кэш ◷ 1м', 'below'])
+    expect(await lines(band)).toEqual([CTX_ALONE + CTX + '  кэш 1м', 'below'])
     // чтений было четыре (до сброса одно, потом конец хода субагента, конец хода главной сессии, тик): список правда читали
     expect(w.roster.reads).toBe(4)
     // первый агент нового разговора считается как есть: старые A, B и C в счёт не входят, хотя движок их отдаёт
     w.roster.now = [agent('A', 'completed'), agent('B', 'running'), agent('C', 'failed'), agent('D', 'running')]
     await reread($)
-    expect(await lines(band)).toEqual([AGENTS + WORK, CTX_ALIGNED + CTX + '   кэш ◷ 1м', 'below'])
+    expect(await lines(band)).toEqual([AGENTS + WORK, CTX_ALIGNED + CTX + '  кэш 1м', 'below'])
     // и дальше D живёт по общим правилам: закончил -> готово
     w.roster.now = [agent('A', 'completed'), agent('B', 'running'), agent('C', 'failed'), agent('D', 'completed')]
     await reread($)
@@ -962,7 +969,7 @@ for (const reason of ['prompt_input_exit', 'logout', 'other'] as const) {
     const band = await desktopBand($, w)
     await reread($)
     await $.session.end({ reason, sessionId: 's1', resume: { id: 's1' } })
-    expect(await lines(band)).toEqual([AGENTS + 'работают 1   готово 0   сбой 1', CTX_ALIGNED + CTX, 'below'])
+    expect(await lines(band)).toEqual([AGENTS + 'работают 1  готово 0  сбой 1', CTX_ALIGNED + CTX, 'below'])
   })
 }
 
@@ -985,13 +992,13 @@ test('a second session.start (what a reload of the plugin raises) leaves the tal
   await $.session.start(START)
   const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
   await reread($)
-  expect(await rowOf(band)).toBe(AGENTS + 'работают 1   готово 1   сбой 1')
+  expect(await rowOf(band)).toBe(AGENTS + 'работают 1  готово 1  сбой 1')
   await $.session.start(START)
-  expect(await rowOf(band)).toBe(AGENTS + 'работают 1   готово 1   сбой 1')
+  expect(await rowOf(band)).toBe(AGENTS + 'работают 1  готово 1  сбой 1')
   // и после него учёт продолжает помнить: A пропал из списка -> готово
   w.roster.now = []
   await reread($)
-  expect(await rowOf(band)).toBe(AGENTS + 'работают 0   готово 2   сбой 1')
+  expect(await rowOf(band)).toBe(AGENTS + 'работают 0  готово 2  сбой 1')
 })
 
 test('reload stand-in: a tally left in the session state by an earlier module instance is drawn at once and merged with the next read', async ($, on) => {
@@ -1012,9 +1019,193 @@ test('reload stand-in: a tally left in the session state by an earlier module in
   const band = await desktopBand($, w)
   // ни одного чтения списка не было, а цифры уже те, что в state: 1 работает, 1 сбой
   expect(w.roster.reads).toBe(0)
-  expect(await rowOf(band)).toBe(AGENTS + 'работают 1   готово 0   сбой 1')
+  expect(await rowOf(band)).toBe(AGENTS + 'работают 1  готово 0  сбой 1')
   // новое чтение: A в списке нет (работал -> готово), B нет (сбой остаётся), C новый
   w.roster.now = [agent('C', 'running')]
   await reread($)
-  expect(await rowOf(band)).toBe(AGENTS + 'работают 1   готово 1   сбой 1')
+  expect(await rowOf(band)).toBe(AGENTS + 'работают 1  готово 1  сбой 1')
+})
+
+// --- F-27: язык строк в полосе (спека ctx 0.3.0, тикет 02) ---
+//
+// Тот же мир и те же входы, что у русских тестов выше, с опцией `lang = en`. Корзины (какое слово движка в какую считается)
+// от языка не зависят: меняются слова и подпись, поэтому ожидания — те же числа, что в русских таблицах выше, с английскими
+// словами из спеки: работают -> running, готово -> ready, сбой -> failed.
+
+const EN = { options: { lang: 'en' } }
+const AGENTS_EN = 'subagents  '
+const CTX_ALIGNED_EN = 'ctx        ' // `ctx` + восемь пробелов: девять знаков `subagents` плюс два пробела разделителя минус три знака `ctx`
+
+test('the labels of the spec: `subagents  ` is 11 characters, `ctx` + 8 spaces is 11 as well, `ctx  ` alone is 5; in Russian 8 and 8', () => {
+  expect(AGENTS_EN.length).toBe(11)
+  expect(CTX_ALIGNED_EN.length).toBe(11)
+  expect(CTX_ALIGNED_EN).toBe('ctx' + ' '.repeat(8))
+  expect(CTX_ALONE.length).toBe(5)
+  // и русские: `агенты  ` — 8, `ctx` + 5 пробелов — 8
+  expect(AGENTS.length).toBe(8)
+  expect(CTX_ALIGNED).toBe('ctx' + ' '.repeat(5))
+})
+
+test('lang en: no agents: no agent row and the ctx label stays `ctx  `', EN, async ($, on) => {
+  const w = world(on)
+  const band = await desktopBand($, w)
+  await reread($)
+  expect(w.roster.reads).toBe(1)
+  expect(await lines(band)).toEqual([CTX_ALONE + CTX, 'below'])
+})
+
+test('lang en: one agent is working: `subagents  running 1  ready 0` over `ctx        ` and the ctx line', EN, async ($, on) => {
+  const w = world(on)
+  w.roster.now = [agent('a1', 'running')]
+  const band = await desktopBand($, w)
+  await reread($)
+  expect(await lines(band)).toEqual([AGENTS_EN + 'running 1  ready 0', CTX_ALIGNED_EN + CTX, 'below'])
+})
+
+test('lang en: labels are one width: the agent row and the ctx row start their text in the column 11 (9 letters of subagents + 2 spaces)', EN, async ($, on) => {
+  const w = world(on)
+  w.roster.now = [agent('a1', 'running')]
+  const band = await desktopBand($, w)
+  await reread($)
+  const [agentsLine, ctxLine] = await lines(band)
+  expect(agentsLine!.indexOf('running')).toBe(11)
+  expect(ctxLine!.indexOf('▪')).toBe(11)
+})
+
+test('lang en: both rows are dim text, the agent row and the ctx row aligned under it', EN, async ($, on) => {
+  const w = world(on)
+  w.roster.now = [agent('a1', 'running')]
+  const band = await desktopBand($, w)
+  await reread($)
+  const texts = await band.findAll({ type: 'Text' })
+  expect(texts.map(t => t.text)).toEqual([AGENTS_EN + 'running 1  ready 0', CTX_ALIGNED_EN + CTX, 'below'])
+  expect(texts[0]!.props.dimColor).toBe(true)
+  expect(texts[1]!.props.dimColor).toBe(true)
+})
+
+test('lang en: the agent row drawn alone (no ctx data) is English too', EN, async ($, on) => {
+  const w = world(on)
+  w.roster.now = [agent('a1', 'running')]
+  await $.session.measure(measureArg(undefined))
+  const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+  await reread($)
+  expect(await lines(band)).toEqual([AGENTS_EN + 'running 1  ready 0', 'below'])
+})
+
+// Таблица корзин по-английски: те же восемь слов движка и те же корзины, что в BUCKETS выше, слова строки из спеки.
+// `failed` стоит в строке только при сбое: у шести строк без сбоя его нет.
+const BUCKETS_EN: [string, string][] = [
+  ['pending', 'running 1  ready 0'],
+  ['running', 'running 1  ready 0'],
+  ['waiting', 'running 1  ready 0'],
+  ['idle', 'running 1  ready 0'],
+  ['completed', 'running 0  ready 1'],
+  ['failed', 'running 0  ready 0  failed 1'],
+  ['killed', 'running 0  ready 0  failed 1'],
+  ['hibernating', 'running 1  ready 0'],
+]
+test('lang en: the table of BUCKETS has the same eight words as the Russian one, in the same order', () => {
+  expect(BUCKETS_EN.map(row => row[0])).toEqual(BUCKETS.map(row => row[0]))
+  expect(BUCKETS_EN.length).toBe(8)
+})
+for (const [status, expected] of BUCKETS_EN) {
+  test(`lang en: status table: one agent "${status}" -> ${expected}`, EN, async ($, on) => {
+    const w = world(on)
+    w.roster.now = [agent('a1', status)]
+    const band = await desktopBand($, w)
+    await reread($)
+    expect(await lines(band)).toEqual([AGENTS_EN + expected, CTX_ALIGNED_EN + CTX, 'below'])
+    // слово `failed` в строке есть ровно у тех, кто упал или остановлен
+    expect((await lines(band))[0]!.includes('failed'), status).toBe(status === 'failed' || status === 'killed')
+  })
+}
+
+test('lang en: failed and killed are `failed 2` and stand after `ready`', EN, async ($, on) => {
+  const w = world(on)
+  w.roster.now = [agent('a1', 'failed'), agent('a2', 'killed'), agent('a3', 'completed')]
+  const band = await desktopBand($, w)
+  await reread($)
+  expect(await lines(band)).toEqual([AGENTS_EN + 'running 0  ready 1  failed 2', CTX_ALIGNED_EN + CTX, 'below'])
+})
+
+test('lang en: a list without failures draws no `failed` (agents are only working and done)', EN, async ($, on) => {
+  const w = world(on)
+  w.roster.now = [agent('a1', 'running'), agent('a2', 'completed')]
+  const band = await desktopBand($, w)
+  await reread($)
+  const row = (await lines(band))[0]!
+  expect(row).toBe(AGENTS_EN + 'running 1  ready 1')
+  expect(row.includes('failed')).toBe(false)
+})
+
+test('lang en: a mixed list of ten: running 5, ready 3, failed 2, the counters add up to the non-teammate agents of the input', EN, async ($, on) => {
+  const w = world(on)
+  w.roster.now = [
+    agent('a1', 'running'),
+    agent('a2', 'pending'),
+    agent('a3', 'waiting'),
+    agent('a4', 'idle'),
+    agent('a5', 'hibernating'),
+    agent('a6', 'completed'),
+    agent('a7', 'completed'),
+    agent('a8', 'failed'),
+    agent('a9', 'killed'),
+    teammate('t1', 'running'),
+    teammate('t2', 'completed'),
+    agent('a10', 'completed'),
+  ]
+  const subagents = w.roster.now.filter(a => !a.teammateId).length
+  expect(subagents).toBe(10)
+  const band = await desktopBand($, w)
+  await reread($)
+  const row = (await lines(band))[0]!
+  expect(row).toBe(AGENTS_EN + 'running 5  ready 3  failed 2')
+  expect(sumOf(row)).toBe(subagents)
+})
+
+// Вся полоса одного языка (история 3: «в полосе не было смеси языков»). Строка ctx — со всеми частями (окна, кэш, стоимость),
+// строка агентов — со сбоем. Проверяются две наши строки полосы; третья (`below`) — заглушка теста, а не наш текст.
+// Сброс окон: 5 часов — через 2 ч 13 мин 01 с от часов плагина (-> 2ч14м), неделя — воскресенье 10:00.
+for (const lang of ['ru', 'en'] as const) {
+  test(`lang ${lang}: both band rows are in one language only, the whole text is as the spec shows it`, { options: { lang, showCost: true } }, async ($, on) => {
+    const w = world(on)
+    w.roster.now = [agent('a1', 'running'), agent('a2', 'completed'), agent('a3', 'failed')]
+    await $.session.measure({
+      context: { window: 200_000, percent: 49 },
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: 71, resetsAt: new Date(T0 + 133 * MIN + 1000).toISOString() },
+        // 2026-10-18 is a Sunday, local 10:00
+        { kind: 'seven_day', percentUsed: 61, resetsAt: new Date(2026, 9, 18, 10, 0).toISOString() },
+      ],
+      cost: { usd: 75.74 },
+      changed: ['context' as const],
+    })
+    const band = await $.ui.mount({ plugin: 'ctx', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+    await $.turn.complete(turnComplete())
+    await w.clock.advance(5 * MIN)
+    await reread($)
+    const [agentsLine, ctxLine, ...rest] = await lines(band)
+    expect(rest).toEqual(['below'])
+    // 5 минут спустя от замера: остаток 2 ч 13 мин 01 с - 5 мин = 2 ч 8 мин 01 с -> округление вверх, 2ч09м
+    if (lang === 'en') {
+      expect(agentsLine).toBe('subagents  running 1  ready 1  failed 1')
+      expect(ctxLine).toBe('ctx        ▪▪▪▪▫▫▫▫ 49%  5h ▪▪▪▪▪▪▫▫ 71% ↻2h09m  wk ▪▪▪▪▪▫▫▫ 61% ↻Sun 10:00  cache cold  $75.74')
+      expect(`${agentsLine}${ctxLine}`).not.toMatch(/[А-Яа-яЁё]/)
+    } else {
+      expect(agentsLine).toBe('агенты  работают 1  готово 1  сбой 1')
+      expect(ctxLine).toBe('ctx     ▪▪▪▪▫▫▫▫ 49%  5ч ▪▪▪▪▪▪▫▫ 71% ↻2ч09м  нед ▪▪▪▪▪▫▫▫ 61% ↻вс 10:00  кэш остыл  $75.74')
+      // латиницей в русских строках остаётся только подпись `ctx` и стоимость
+      expect(`${agentsLine}${ctxLine}`.replace('ctx', '').replace('$', '')).not.toMatch(/[A-Za-z]/)
+    }
+  })
+}
+
+// Отладочный журнал язык не меняет (спека, «Что язык не меняет»); подпись `ctx`, шкалы, `↻`, `$` и имя папки в нижнем ряду — в band.test.ts.
+test('lang en: a refused list read goes to the debug log in Russian, as with the default language', EN, async ($, on) => {
+  const w = world(on)
+  w.roster.refuse = true
+  await desktopBand($, w)
+  await reread($)
+  expect(w.logs.length).toBe(1)
+  expect(w.logs[0]!.startsWith('debug: ctx: список агентов не прочитан: ')).toBe(true)
 })

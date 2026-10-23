@@ -4,6 +4,9 @@ export type CtxOptions = {
   redAt: number
   cacheMinutes: number
   showCost: boolean
+  // Язык строк: `ru` или `en` (список в манифесте). Строкой, а не союзом `'ru' | 'en'`: плагин принимает любое значение
+  // и всё, кроме `en`, читает как русский (hooks/words.ts, wordsOf).
+  lang: string
 }
 
 // Последние показания, из которых собирается строка: процент контекста,

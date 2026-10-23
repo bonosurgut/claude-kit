@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderSurface, SessionUsage, Timer } from 'claude-code'
 import type { AgentStates, CtxOptions, CtxSnapshot } from '../types'
-import { AGENTS_LABEL, ALIGNED_CTX_LABEL, agentsRow, remember, retire, statesOf } from './agents'
+import { agentsLabel, agentsRow, alignedCtxLabel, remember, retire, statesOf } from './agents'
 import { shortFolder } from './folder'
 import { SEPARATOR, statusLine } from './line'
+import { wordsOf } from './words'
 
 const snapshot = atom({ plugin: 'ctx', key: 'snapshot' } as const, null as CtxSnapshot | null)
 const lastTurnAt = atom({ plugin: 'ctx', key: 'lastTurnAt' } as const, 0)
@@ -11,7 +12,8 @@ const line = atom({ plugin: 'ctx', key: 'line' } as const, null as string | null
 const agents = atom({ plugin: 'ctx', key: 'agents' } as const, {} as AgentStates)
 
 // Подпись полосы: строку состояния подписывает сам движок (`ctx` / `⚠ ctx:`), полосу — никто.
-// Когда над строкой ctx стоит строка агентов, подпись ctx выравнивается с подписью агентов (ALIGNED_CTX_LABEL).
+// Когда над строкой ctx стоит строка агентов, подпись ctx выравнивается с подписью агентов выбранного языка
+// (alignedCtxLabel). Подпись `ctx` на языки не делится.
 const BAND_LABEL = 'ctx' + SEPARATOR
 const NOTHING_KNOWN: CtxSnapshot = { percent: null, rateLimits: [], usd: null }
 const MINUTE_MS = 60_000
@@ -145,6 +147,10 @@ function coldEdge($: EngineInterface, options: CtxOptions): Timer {
 
 export const register: Register = (on, rawOptions) => {
   const options = rawOptions as CtxOptions
+  // Язык строк (F-27) берётся из настроек один раз, при загрузке модуля, как redAt, cacheMinutes и showCost. Перехвата
+  // изменения настроек в плагине нет: когда выбор `en` в /config дойдёт до строки (сразу или после перезагрузки
+  // плагина), решает движок; это записывается живой проверкой, а не этим кодом.
+  const words = wordsOf(options.lang)
   let minuteTimer: Timer | undefined
   let coldTimer: Timer | undefined
 
@@ -243,21 +249,22 @@ export const register: Register = (on, rawOptions) => {
     return left
   })
 
-  // Полоса над полем ввода в приложении, приглушённым текстом, сверху вниз: строка агентов («агенты   работают N
-  // ...», есть, только если учёт не пуст), строка ctx (та же строка, что в терминале, с подписью «ctx»; нет данных —
-  // нет строки). Обе читаются из state, поэтому запись в них перерисовывает полосу. Нет ни той, ни другой — полоса ничего не рисует.
+  // Полоса над полем ввода в приложении, приглушённым текстом, сверху вниз: строка агентов (подпись и слова на
+  // выбранном языке: «агенты  работают N ...» или «subagents  running N ...»; есть, только если учёт не пуст), строка
+  // ctx (та же строка, что в терминале, с подписью «ctx»; нет данных — нет строки). Обе читаются из state, поэтому запись
+  // в них перерисовывает полосу. Нет ни той, ни другой — полоса ничего не рисует.
   // Уступает опросу приложения; полосы других модов (то, что ниже по цепочке) остаются под нашими строками.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.surface !== 'desktop' || e.props.hasSurvey) return next(e)
     const text = await read($, line)
-    const row = agentsRow(await read($, agents))
+    const row = agentsRow(await read($, agents), words)
     if (text === null && row === undefined) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const theirs = await next(e)
     return (
       <Box flexDirection="column">
-        {row === undefined ? null : <Text dimColor wrap="truncate-end">{AGENTS_LABEL + row}</Text>}
-        {text === null ? null : <Text dimColor wrap="truncate-end">{(row === undefined ? BAND_LABEL : ALIGNED_CTX_LABEL) + text}</Text>}
+        {row === undefined ? null : <Text dimColor wrap="truncate-end">{agentsLabel(words) + row}</Text>}
+        {text === null ? null : <Text dimColor wrap="truncate-end">{(row === undefined ? BAND_LABEL : alignedCtxLabel(words)) + text}</Text>}
         {theirs}
       </Box>
     )
